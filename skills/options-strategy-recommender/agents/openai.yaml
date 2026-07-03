@@ -1,0 +1,4 @@
+interface:
+  display_name: "Options Strategy Recommender"
+  short_description: "Guide Qveris options strategy logic"
+  default_prompt: "Use $options-strategy-recommender to map a parsed market view into safe, QVeris-backed options strategy candidates."

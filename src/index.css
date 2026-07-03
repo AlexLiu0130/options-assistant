@@ -1,0 +1,80 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg: #f5f8fc;
+  --surface: #ffffff;
+  --surface-2: #eef4fb;
+  --text: #1f2a3d;
+  --muted: #6b7890;
+  --border: #e3ebf5;
+  --accent: #0b7a3b;
+  --accent-soft: rgba(11, 122, 59, 0.09);
+  --accent-mid: rgba(11, 122, 59, 0.2);
+  --profit: #12803c;
+  --profit-soft: rgba(18, 128, 60, 0.1);
+  --loss: #d93535;
+  --loss-soft: rgba(217, 53, 53, 0.09);
+  --warning: #d97706;
+  --accent-grad: linear-gradient(135deg, #0b7a3b, #15a856);
+  --shadow-sm: 0 1px 2px rgba(31, 42, 61, 0.04), 0 2px 8px rgba(31, 42, 61, 0.04);
+  --shadow-md: 0 2px 4px rgba(31, 42, 61, 0.05), 0 8px 22px rgba(31, 42, 61, 0.08);
+  --shadow-lg: 0 4px 16px rgba(15, 23, 42, 0.08), 0 24px 64px rgba(15, 23, 42, 0.22);
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', monospace;
+  font-family: 'Inter', 'Source Han Sans SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', ui-sans-serif, system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-weight: 400;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--bg);
+  font-variant-numeric: tabular-nums;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+::selection {
+  background: var(--accent-mid);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent-mid);
+  outline-offset: 2px;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #c3d0e2 transparent;
+}
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #c9d5e5;
+  border-radius: 8px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #aebdd3;
+}

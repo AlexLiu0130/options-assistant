@@ -6,7 +6,7 @@ on:
       checkout_ref:
         description: Branch, tag, or commit SHA to build
         required: true
-        default: release/test
+        default: main
         type: string
       image_tag:
         description: Docker image tag. Use auto to derive one from the selected ref.

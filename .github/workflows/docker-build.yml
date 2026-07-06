@@ -53,32 +53,19 @@ jobs:
           else
             tag="$(echo "${{ inputs.image_tag }}" | tr '/:@ ' '-' | tr -cd '[:alnum:]_.-')"
           fi
-          echo "api_image=ghcr.io/${repository}/options-assistant-api:${tag}" >> "$GITHUB_OUTPUT"
-          echo "web_image=ghcr.io/${repository}/options-assistant-web:${tag}" >> "$GITHUB_OUTPUT"
+          echo "app_image=ghcr.io/${repository}/options-assistant-app:${tag}" >> "$GITHUB_OUTPUT"
 
-      - name: Build API image
+      - name: Build application service image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/Dockerfile.api
+          file: deploy/Dockerfile.service
           push: ${{ inputs.push_images }}
           load: ${{ !inputs.push_images }}
-          tags: ${{ steps.meta.outputs.api_image }}
-          cache-from: type=gha,scope=options-assistant-api
-          cache-to: type=gha,mode=max,scope=options-assistant-api
-
-      - name: Build Nginx web image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: deploy/Dockerfile.nginx
-          push: ${{ inputs.push_images }}
-          load: ${{ !inputs.push_images }}
-          tags: ${{ steps.meta.outputs.web_image }}
-          cache-from: type=gha,scope=options-assistant-web
-          cache-to: type=gha,mode=max,scope=options-assistant-web
+          tags: ${{ steps.meta.outputs.app_image }}
+          cache-from: type=gha,scope=options-assistant-app
+          cache-to: type=gha,mode=max,scope=options-assistant-app
 
       - name: Print image tags
         run: |
-          echo "API image: ${{ steps.meta.outputs.api_image }}"
-          echo "Web image: ${{ steps.meta.outputs.web_image }}"
+          echo "Application service image: ${{ steps.meta.outputs.app_image }}"

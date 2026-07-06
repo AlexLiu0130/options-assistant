@@ -32,6 +32,8 @@ const deepseekBaseUrl = process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.c
 const deepseekModel = process.env.DEEPSEEK_MODEL || 'deepseek-chat'
 const sessionId = process.env.QVERIS_SESSION_ID || 'options-assistant-local'
 const port = Number(process.env.API_PORT || 8787)
+const host = process.env.API_HOST || '127.0.0.1'
+const corsOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:5173'
 const refreshMs = Number(process.env.QVERIS_REFRESH_MS || 60000)
 const closedCacheMs = Number(process.env.QVERIS_CLOSED_CACHE_MS || 6 * 60 * 60 * 1000)
 const heavyLimit = Number(process.env.QVERIS_HEAVY_CONCURRENCY || 4)
@@ -55,10 +57,15 @@ const tools = {
 }
 
 function json(res, status, body) {
-  res.writeHead(status, {
+  const headers = {
     'content-type': 'application/json; charset=utf-8',
-    'access-control-allow-origin': 'http://localhost:5173',
-  })
+  }
+  if (corsOrigin) {
+    headers['access-control-allow-origin'] = corsOrigin
+    headers['access-control-allow-methods'] = 'GET,POST,OPTIONS'
+    headers['access-control-allow-headers'] = 'content-type,authorization'
+  }
+  res.writeHead(status, headers)
   res.end(JSON.stringify(body))
 }
 
@@ -569,6 +576,7 @@ function normalizeVolatility(ticker, result) {
 
 async function handle(req, res) {
   try {
+    if (req.method === 'OPTIONS') return json(res, 204, {})
     const url = new URL(req.url || '/', `http://${req.headers.host}`)
     if (url.pathname === '/api/health') return json(res, 200, { ok: true })
 
@@ -829,7 +837,7 @@ if (process.argv.includes('--smoke')) {
   const market = await qverisExecute(tools.quote, { symbol: ticker.toUpperCase() })
   console.log(JSON.stringify({ ok: true, ticker: ticker.toUpperCase(), fields: Object.keys(market).sort() }, null, 2))
 } else {
-  createServer(handle).listen(port, '127.0.0.1', () => {
-    console.log(`QVeris local API listening on http://127.0.0.1:${port}`)
+  createServer(handle).listen(port, host, () => {
+    console.log(`QVeris API listening on http://${host}:${port}`)
   })
 }

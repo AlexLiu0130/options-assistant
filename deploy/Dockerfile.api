@@ -1,0 +1,26 @@
+FROM node:24-alpine AS deps
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+FROM node:24-alpine
+
+ENV NODE_ENV=production \
+    API_HOST=0.0.0.0 \
+    API_PORT=8787 \
+    PAPER_TRADE_STORE_PATH=/data/paper-trades.json
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY --from=deps /app/node_modules ./node_modules
+COPY server ./server
+COPY src ./src
+
+RUN mkdir -p /data /app/.cache/qveris
+
+EXPOSE 8787
+
+CMD ["node", "--experimental-strip-types", "server/qverisServer.mjs"]

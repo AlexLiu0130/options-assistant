@@ -1,12 +1,12 @@
 name: options-assistant
 
 services:
-  api:
-    container_name: options-assistant-api
+  app:
+    container_name: options-assistant-app
     build:
       context: ..
-      dockerfile: deploy/Dockerfile.api
-    image: ${OPTIONS_ASSISTANT_API_IMAGE:-options-assistant-api:local}
+      dockerfile: deploy/Dockerfile.service
+    image: ${OPTIONS_ASSISTANT_APP_IMAGE:-options-assistant-app:local}
     restart: unless-stopped
     environment:
       NODE_ENV: production
@@ -14,6 +14,7 @@ services:
       API_PORT: ${API_PORT:-8787}
       CORS_ORIGIN: ${CORS_ORIGIN:-}
       PAPER_TRADE_STORE_PATH: ${PAPER_TRADE_STORE_PATH:-/data/paper-trades.json}
+      SERVE_STATIC: ${SERVE_STATIC:-true}
       QVERIS_API_KEY: ${QVERIS_API_KEY:?set QVERIS_API_KEY}
       QVERIS_BASE_URL: ${QVERIS_BASE_URL:-https://qveris.ai/api/v1}
       QVERIS_SESSION_ID: ${QVERIS_SESSION_ID:-options-assistant-internal}

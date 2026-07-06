@@ -1,15 +1,14 @@
 name: options-assistant-proxy
 
 services:
-  web:
-    container_name: options-assistant-web
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile.nginx
-    image: ${OPTIONS_ASSISTANT_WEB_IMAGE:-options-assistant-web:local}
+  nginx:
+    container_name: options-assistant-nginx
+    image: nginx:1.31.2-alpine
     restart: unless-stopped
     ports:
       - "${WEB_HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       - options-assistant-net
 

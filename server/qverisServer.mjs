@@ -1,5 +1,7 @@
 import { createServer } from 'node:http'
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'node:fs'
+import { extname, join, normalize, relative, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   agentFallbackResponse,
   buildAssistantPlan,
@@ -34,6 +36,7 @@ const sessionId = process.env.QVERIS_SESSION_ID || 'options-assistant-local'
 const port = Number(process.env.API_PORT || 8787)
 const host = process.env.API_HOST || '127.0.0.1'
 const corsOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:5173'
+const serveStatic = process.env.SERVE_STATIC !== 'false'
 const refreshMs = Number(process.env.QVERIS_REFRESH_MS || 60000)
 const closedCacheMs = Number(process.env.QVERIS_CLOSED_CACHE_MS || 6 * 60 * 60 * 1000)
 const heavyLimit = Number(process.env.QVERIS_HEAVY_CONCURRENCY || 4)
@@ -41,6 +44,7 @@ const marketCache = new Map()
 const optionsCache = new Map()
 const qverisInflight = new Map()
 const cacheDir = new URL('../.cache/qveris/', import.meta.url)
+const staticRoot = fileURLToPath(new URL('../dist/', import.meta.url))
 let heavyActive = 0
 const heavyQueue = []
 
@@ -67,6 +71,42 @@ function json(res, status, body) {
   }
   res.writeHead(status, headers)
   res.end(JSON.stringify(body))
+}
+
+function sendFile(req, res, file, cacheControl = 'no-store') {
+  const types = {
+    '.css': 'text/css; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.ico': 'image/x-icon',
+    '.js': 'text/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.txt': 'text/plain; charset=utf-8',
+  }
+  res.writeHead(200, {
+    'content-type': types[extname(file)] || 'application/octet-stream',
+    'cache-control': cacheControl,
+  })
+  res.end(req.method === 'HEAD' ? undefined : readFileSync(file))
+}
+
+function tryStatic(req, res, url) {
+  if (!serveStatic || (req.method !== 'GET' && req.method !== 'HEAD')) return false
+  const pathname = decodeURIComponent(url.pathname)
+  const requested = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '')
+  const normalized = normalize(requested)
+  if (normalized.startsWith('..') || normalized.includes(`..${sep}`)) return false
+  const file = join(staticRoot, normalized)
+  const rel = relative(staticRoot, file)
+  if (rel.startsWith('..') || rel === '') return false
+  if (existsSync(file) && statSync(file).isFile()) {
+    sendFile(req, res, file, pathname.startsWith('/assets/') ? 'public, max-age=604800, immutable' : 'no-store')
+    return true
+  }
+  const index = join(staticRoot, 'index.html')
+  if (!existsSync(index) || !statSync(index).isFile()) return false
+  sendFile(req, res, index)
+  return true
 }
 
 function safeError(message = 'QVeris request failed.', status = 502) {
@@ -825,6 +865,8 @@ async function handle(req, res) {
       const result = await qverisHeavyExecute(tools.volatility, { symbol: ticker }, 16000)
       return json(res, 200, normalizeVolatility(ticker, result))
     }
+
+    if (url.pathname !== '/api' && !url.pathname.startsWith('/api/') && tryStatic(req, res, url)) return
 
     json(res, 404, { error: 'Not found' })
   } catch (error) {

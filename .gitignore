@@ -11,6 +11,8 @@ dist
 dist-ssr
 __pycache__/
 *.local
+deploy/*.env
+!deploy/*.env.example
 
 # Local assistant/runtime files
 .claude/

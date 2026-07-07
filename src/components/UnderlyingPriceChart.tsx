@@ -62,7 +62,7 @@ export function UnderlyingPriceChart({
       time: typeof candle.time === 'number' ? (candle.time as UTCTimestamp) : candle.time,
     }))
     const chart = createChart(ref.current, {
-      height: CHART_HEIGHT,
+      height: ref.current.clientHeight || CHART_HEIGHT,
       layout: { background: { color: 'transparent' }, textColor: '#6b7890' },
       grid: { vertLines: { visible: false }, horzLines: { visible: false } },
       rightPriceScale: { borderColor: '#e3ebf5' },
@@ -229,8 +229,16 @@ export function UnderlyingPriceChart({
     }
     chartRef.current = chart
     seriesRef.current = candles
+    const resize = new ResizeObserver(([entry]) => {
+      chart.applyOptions({
+        height: entry.contentRect.height || CHART_HEIGHT,
+        width: entry.contentRect.width,
+      })
+    })
+    resize.observe(ref.current)
 
     return () => {
+      resize.disconnect()
       chart.remove()
       chartRef.current = null
       seriesRef.current = null
@@ -267,7 +275,7 @@ export function UnderlyingPriceChart({
           ))}
         </div>
       ) : (
-        <div style={{ height: CHART_HEIGHT }}>
+        <div className="chart-stage">
           <div className="chart-host" ref={ref} />
         </div>
       )}

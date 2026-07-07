@@ -67,6 +67,22 @@ const greeksChart = buildGreeksQuadChart({ strategy, underlyingPrice: 110, daysL
 assert.deepEqual(greeksChart.panels.map((panel) => panel.metric), ['delta', 'gamma', 'theta', 'vega'])
 assert.ok(greeksChart.panels.every((panel) => panel.points.length === 61))
 assert.ok(greeksChart.panels.find((panel) => panel.metric === 'delta')?.currentValue)
+const syntheticLongGreeks = buildGreeksQuadChart({
+  strategy: {
+    ...strategy,
+    id: 'check-synthetic-long',
+    legs: [
+      { action: 'buy', right: 'call', strike: 100, expiration: '2026-07-17', quantity: 1, premium: 5, impliedVolatility: 0.3 },
+      { action: 'sell', right: 'put', strike: 100, expiration: '2026-07-17', quantity: 1, premium: 5, impliedVolatility: 0.3 },
+    ],
+  },
+  underlyingPrice: 100,
+  daysLeft: 30,
+})
+assert.ok(Math.abs((syntheticLongGreeks.panels.find((panel) => panel.metric === 'delta')?.currentValue ?? 0) - 100) < 0.1)
+assert.ok(Math.abs(syntheticLongGreeks.panels.find((panel) => panel.metric === 'gamma')?.currentValue ?? 1) < 0.0001)
+assert.ok(Math.abs(syntheticLongGreeks.panels.find((panel) => panel.metric === 'theta')?.currentValue ?? 1) < 0.0001)
+assert.ok(Math.abs(syntheticLongGreeks.panels.find((panel) => panel.metric === 'vega')?.currentValue ?? 1) < 0.0001)
 
 const dateAfter = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10)
 const chainExpiration = dateAfter(45)

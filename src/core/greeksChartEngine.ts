@@ -1,4 +1,4 @@
-import { strategyTheoreticalValue } from './simulatorEngine.ts'
+import { OPTION_MULTIPLIER } from './payoffEngine.ts'
 import type { StrategyCandidate, StrategyLeg } from '../types/strategyTypes'
 
 export type GreeksMetric = 'delta' | 'gamma' | 'theta' | 'vega'
@@ -28,23 +28,72 @@ function round(value: number, digits = 4) {
   return Number(value.toFixed(digits))
 }
 
-function withIvShift(legs: StrategyLeg[], shift: number) {
-  return legs.map((leg) => ({
-    ...leg,
-    impliedVolatility: Math.max((leg.impliedVolatility ?? 0.35) + shift, 0.01),
-  }))
+function normPdf(x: number) {
+  return Math.exp((-x * x) / 2) / Math.sqrt(2 * Math.PI)
+}
+
+function normCdf(x: number) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x))
+  const d = 0.3989423 * Math.exp((-x * x) / 2)
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))))
+  return x > 0 ? 1 - p : p
+}
+
+function firstExpirationMs(legs: StrategyLeg[]) {
+  return legs
+    .map((leg) => new Date(`${leg.expiration}T21:00:00Z`).getTime())
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b)[0]
+}
+
+function legDaysLeft(leg: StrategyLeg, baseDaysLeft: number, firstExpiry?: number) {
+  const legExpiry = new Date(`${leg.expiration}T21:00:00Z`).getTime()
+  const offset = firstExpiry && Number.isFinite(legExpiry)
+    ? Math.max(0, Math.round((legExpiry - firstExpiry) / 86_400_000))
+    : 0
+  return Math.max(1, baseDaysLeft + offset)
+}
+
+function legGreeks(leg: StrategyLeg, price: number, daysLeft: number) {
+  const spot = Math.max(price, 0.01)
+  const strike = Math.max(leg.strike, 0.01)
+  const iv = Math.max(leg.impliedVolatility ?? 0.35, 0.01)
+  const years = Math.max(daysLeft, 1) / 365
+  const sqrtYears = Math.sqrt(years)
+  const d1 = (Math.log(spot / strike) + (iv * iv * years) / 2) / (iv * sqrtYears)
+  const delta = leg.right === 'call' ? normCdf(d1) : normCdf(d1) - 1
+  const gamma = normPdf(d1) / (spot * iv * sqrtYears)
+  const theta = -(spot * normPdf(d1) * iv) / (2 * sqrtYears) / 365
+  const vega = spot * normPdf(d1) * sqrtYears * 0.01
+  const sign = leg.action === 'buy' ? 1 : -1
+  const scale = sign * leg.quantity * OPTION_MULTIPLIER
+  return {
+    delta: delta * scale,
+    gamma: gamma * scale,
+    theta: theta * scale,
+    vega: vega * scale,
+  }
 }
 
 function greeksAt(legs: StrategyLeg[], price: number, daysLeft: number) {
-  const step = Math.max(price * 0.01, 0.5)
-  const value = strategyTheoreticalValue(legs, price, daysLeft)
-  const up = strategyTheoreticalValue(legs, price + step, daysLeft)
-  const down = strategyTheoreticalValue(legs, Math.max(price - step, 0.01), daysLeft)
+  const firstExpiry = firstExpirationMs(legs)
+  const totals = legs.reduce(
+    (sum, leg) => {
+      const g = legGreeks(leg, price, legDaysLeft(leg, daysLeft, firstExpiry))
+      return {
+        delta: sum.delta + g.delta,
+        gamma: sum.gamma + g.gamma,
+        theta: sum.theta + g.theta,
+        vega: sum.vega + g.vega,
+      }
+    },
+    { delta: 0, gamma: 0, theta: 0, vega: 0 },
+  )
   return {
-    delta: round((up - down) / (2 * step)),
-    gamma: round((up - 2 * value + down) / (step * step)),
-    theta: round(daysLeft > 0 ? strategyTheoreticalValue(legs, price, daysLeft - 1) - value : 0),
-    vega: round(strategyTheoreticalValue(withIvShift(legs, 0.01), price, daysLeft) - value),
+    delta: round(totals.delta),
+    gamma: round(totals.gamma),
+    theta: round(totals.theta),
+    vega: round(totals.vega),
   }
 }
 
@@ -88,6 +137,6 @@ export function buildGreeksQuadChart({
       panel('theta', 'Theta', '$ P/L per day'),
       panel('vega', 'Vega', '$ P/L per +1 IV point'),
     ],
-    warnings: ['Model-based estimate for UI testing; replace with Qveris/Theta Greeks when available.'],
+    warnings: ['Model-based teaching estimate; replace with Qveris/Theta Greeks when available.'],
   }
 }

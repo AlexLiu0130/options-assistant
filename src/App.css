@@ -43,6 +43,13 @@
   gap: 5px;
   margin-right: 4px;
 }
+.oa-brand-button {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+}
 .oa-brand strong {
   font-size: 15px;
   font-weight: 700;

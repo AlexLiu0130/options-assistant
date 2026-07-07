@@ -68,9 +68,10 @@ assert.deepEqual(greeksChart.panels.map((panel) => panel.metric), ['delta', 'gam
 assert.ok(greeksChart.panels.every((panel) => panel.points.length === 61))
 assert.ok(greeksChart.panels.find((panel) => panel.metric === 'delta')?.currentValue)
 
-const chainExpiration = '2026-08-07'
-const eventExpiration = '2026-07-31'
-const backExpiration = '2026-10-16'
+const dateAfter = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10)
+const chainExpiration = dateAfter(45)
+const eventExpiration = dateAfter(30)
+const backExpiration = dateAfter(110)
 function contract(
   right: 'call' | 'put',
   strike: number,

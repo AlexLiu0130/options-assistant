@@ -115,7 +115,7 @@ export function HomePage() {
   return (
     <main className="home-shell">
       <header className="home-topbar">
-        <div className="oa-brand"><strong>Qveris</strong><span>AI</span></div>
+        <button className="oa-brand oa-brand-button" type="button" onClick={() => navigate('#/')} aria-label="Qveris home"><strong>Qveris</strong><span>AI</span></button>
         <div className="oa-top-spacer" />
         <div className="lang-toggle">
           <button className={lang === 'en' ? 'active' : ''} type="button" onClick={() => setLang('en')}>EN</button>

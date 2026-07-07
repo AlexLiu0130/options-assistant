@@ -64,8 +64,9 @@ type FormState = {
   experience_level: ExperienceLevel
 }
 
-type PriceRange = '1d' | '5d' | '1m' | 'daily' | '3m' | '1y' | '5y'
+type PriceRange = '15m' | '1h' | '1d'
 type StrategyFilter = Direction | 'all'
+const lastTickerKey = 'qveris-last-ticker'
 const fetchCache = new Map<string, { expires: number; data: unknown }>()
 const fetchInflight = new Map<string, Promise<unknown>>()
 const fetchCacheMs = 60000
@@ -138,10 +139,23 @@ const directionCardDefs: Array<{ value: Direction; key: 'bullish' | 'neutral' | 
   { value: 'volatile', key: 'volatile', icon: Zap },
 ]
 
-const priceRanges: PriceRange[] = ['daily', '1d', '5d', '1m', '3m', '1y', '5y']
+const priceRanges: PriceRange[] = ['15m', '1h', '1d']
 
-function priceRangeLabel(range: PriceRange, lang: string) {
-  return range === 'daily' ? (lang === 'zh' ? '日线' : 'D') : range
+function priceRangeLabel(range: PriceRange) {
+  return range === '15m' ? '15min' : range
+}
+
+function saveLastTicker(ticker: string) {
+  try { localStorage.setItem(lastTickerKey, ticker) } catch {}
+}
+
+function lastTradePath(fallback?: string) {
+  try {
+    const ticker = (fallback || localStorage.getItem(lastTickerKey) || '').trim().toUpperCase()
+    return ticker ? `#/trade?ticker=${encodeURIComponent(ticker)}` : '#/trade'
+  } catch {
+    return fallback ? `#/trade?ticker=${encodeURIComponent(fallback)}` : '#/trade'
+  }
 }
 
 function shortDate(value: string) {
@@ -192,7 +206,7 @@ function TradingPage({ initialTicker }: { initialTicker: string }) {
   const [form, setForm] = useState<FormState>(startForm)
   const [submitted, setSubmitted] = useState<FormState>(startForm)
   const [profileApplied, setProfileApplied] = useState(false)
-  const [priceRange, setPriceRange] = useState<PriceRange>('1m')
+  const [priceRange, setPriceRange] = useState<PriceRange>('1h')
   const [selectedExpiration, setSelectedExpiration] = useState<string>()
   const [expirationTouched, setExpirationTouched] = useState(false)
   const [chainExpiration, setChainExpiration] = useState<string>()
@@ -204,6 +218,10 @@ function TradingPage({ initialTicker }: { initialTicker: string }) {
   const [market, setMarket] = useState<LoadState<QverisMarketSnapshot>>({})
   const [options, setOptions] = useState<LoadState<QverisOptionsResponse>>({})
   const dataIssues = dataIssueMessages({ market, options })
+
+  useEffect(() => {
+    if (ticker && !unsupportedTicker) saveLastTicker(ticker)
+  }, [ticker, unsupportedTicker])
 
   useEffect(() => {
     if (!ticker || unsupportedTicker) { setMarket({}); return }
@@ -339,6 +357,7 @@ function TradingPage({ initialTicker }: { initialTicker: string }) {
   function submit(event: FormEvent) {
     event.preventDefault()
     const next = { ...form, ticker: form.ticker.trim().toUpperCase() }
+    if (next.ticker) navigate(lastTradePath(next.ticker))
     setSubmitted(profileApplied ? next : unappliedProfile(next))
   }
 
@@ -379,10 +398,10 @@ function TradingPage({ initialTicker }: { initialTicker: string }) {
   return (
     <main className="oa-shell">
       <header className="oa-topbar">
-        <div className="oa-brand">
+        <button className="oa-brand oa-brand-button" type="button" onClick={() => navigate('#/')} aria-label="Qveris home">
           <strong>Qveris</strong>
           <span>AI</span>
-        </div>
+        </button>
         <span className="data-source-badge">{t.topbar.qveris}</span>
         <div className="oa-top-spacer" />
         <Sun size={18} />
@@ -402,7 +421,7 @@ function TradingPage({ initialTicker }: { initialTicker: string }) {
       </header>
 
       <aside className="oa-rail">
-        <button className="active" type="button" title={t.nav.trade}><LineChart size={20} /></button>
+        <button className="active" type="button" title={t.nav.trade} onClick={() => navigate(lastTradePath(ticker))}><LineChart size={20} /></button>
         <button type="button" title={t.nav.learn} onClick={() => navigate('#/learn')}><GraduationCap size={20} /></button>
         <button type="button" title={t.nav.paper} onClick={() => navigate('#/paper')}><Briefcase size={20} /></button>
       </aside>
@@ -439,7 +458,7 @@ function TradingPage({ initialTicker }: { initialTicker: string }) {
                 onClick={() => setPriceRange(range)}
                 type="button"
               >
-                {priceRangeLabel(range, lang)}
+                {priceRangeLabel(range)}
               </button>
             ))}
             <span>

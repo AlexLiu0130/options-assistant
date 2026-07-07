@@ -13,6 +13,14 @@ import { GreeksQuadChart } from './GreeksQuadChart'
 import { StrategyPayoffChart } from './StrategyPayoffChart'
 
 function navigate(path: string) { window.location.hash = path }
+function lastTradePath() {
+  try {
+    const ticker = (localStorage.getItem('qveris-last-ticker') || '').trim().toUpperCase()
+    return ticker ? `#/trade?ticker=${encodeURIComponent(ticker)}` : '#/trade'
+  } catch {
+    return '#/trade'
+  }
+}
 
 const categoryOrder = Object.keys(educationCategories) as EducationCategory[]
 const levelOrder: EducationLevel[] = ['beginner', 'intermediate', 'advanced']
@@ -219,7 +227,7 @@ export function StrategyEducationPage() {
   return (
     <main className="oa-shell edu-shell">
       <header className="oa-topbar">
-        <div className="oa-brand"><strong>Qveris</strong><span>AI</span></div>
+        <button className="oa-brand oa-brand-button" type="button" onClick={() => navigate('#/')} aria-label="Qveris home"><strong>Qveris</strong><span>AI</span></button>
         <h2 className="pp-page-title">{l.title}</h2>
         <div className="oa-top-spacer" />
         <div className="lang-toggle">
@@ -229,7 +237,7 @@ export function StrategyEducationPage() {
       </header>
 
       <aside className="oa-rail">
-        <button type="button" title={t.nav.trade} onClick={() => navigate('#/')}><LineChart size={20} /></button>
+        <button type="button" title={t.nav.trade} onClick={() => navigate(lastTradePath())}><LineChart size={20} /></button>
         <button type="button" className="active" title={t.nav.learn}><GraduationCap size={20} /></button>
         <button type="button" title={t.nav.paper} onClick={() => navigate('#/paper')}><Briefcase size={20} /></button>
       </aside>

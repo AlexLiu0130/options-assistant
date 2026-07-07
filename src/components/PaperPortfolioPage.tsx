@@ -28,6 +28,14 @@ function fmtDateShort(iso?: string) {
 }
 
 function navigate(path: string) { window.location.hash = path }
+function lastTradePath() {
+  try {
+    const ticker = (localStorage.getItem('qveris-last-ticker') || '').trim().toUpperCase()
+    return ticker ? `#/trade?ticker=${encodeURIComponent(ticker)}` : '#/trade'
+  } catch {
+    return '#/trade'
+  }
+}
 
 // ─── P/L cell ─────────────────────────────────────────────────────────────────
 
@@ -370,7 +378,7 @@ export function PaperPortfolioPage() {
   return (
     <main className="oa-shell pp-shell">
       <header className="oa-topbar pp-topbar-inner">
-        <div className="oa-brand"><strong>Qveris</strong><span>AI</span></div>
+        <button className="oa-brand oa-brand-button" type="button" onClick={() => navigate('#/')} aria-label="Qveris home"><strong>Qveris</strong><span>AI</span></button>
         <h2 className="pp-page-title">{p.title}</h2>
         <div className="oa-top-spacer" />
         <button className="pp-refresh-btn" type="button" onClick={load} disabled={loading}>
@@ -379,7 +387,7 @@ export function PaperPortfolioPage() {
       </header>
 
       <aside className="oa-rail">
-        <button type="button" title={t.nav.trade} onClick={() => navigate('')}><LineChart size={20} /></button>
+        <button type="button" title={t.nav.trade} onClick={() => navigate(lastTradePath())}><LineChart size={20} /></button>
         <button type="button" title={t.nav.learn} onClick={() => navigate('#/learn')}><GraduationCap size={20} /></button>
         <button type="button" className="active" title={t.nav.paper}><Briefcase size={20} /></button>
       </aside>

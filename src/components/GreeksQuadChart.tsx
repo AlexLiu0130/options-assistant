@@ -53,8 +53,13 @@ function MiniChart({
   const ys = pts.map((p) => p.value)
   const minX = Math.min(...xs)
   const maxX = Math.max(...xs)
-  const minY = Math.min(...ys)
-  const maxY = Math.max(...ys)
+  const sortedY = [...ys].sort((a, b) => a - b)
+  const pick = (p: number) => sortedY[Math.min(sortedY.length - 1, Math.max(0, Math.floor((sortedY.length - 1) * p)))]
+  const yP08 = pick(0.08)
+  const yP92 = pick(0.92)
+  const crossesZero = yP08 < 0 && yP92 > 0
+  const minY = Math.min(yP08, panel.currentValue, crossesZero ? 0 : yP08)
+  const maxY = Math.max(yP92, panel.currentValue, crossesZero ? 0 : yP92)
   const rangeX = maxX - minX || 1
   const rawRangeY = maxY - minY
   // Add 8% padding to Y so line doesn't hug edges

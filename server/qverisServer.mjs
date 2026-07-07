@@ -339,9 +339,11 @@ async function parseToolContent(result) {
 }
 
 function marketRangeParams(range) {
-  const normalized = String(range || '1m').toLowerCase()
+  const normalized = String(range || '1h').toLowerCase()
   const table = {
-    '1d': { range: '1d', period: '1d', from: daysAgo(2), kind: 'intraday', interval: '5min', tradingDays: 1 },
+    '15m': { range: '5d', period: '5d', from: daysAgo(8), kind: 'intraday', interval: '15min', tradingDays: 5 },
+    '1h': { range: '1m', period: '1m', from: daysAgo(35), kind: 'intraday', interval: '60min', tradingDays: 22 },
+    '1d': { range: '1y', period: 'd', from: daysAgo(370), kind: 'daily', candles: 252, outputsize: 'full' },
     '5d': { range: '5d', period: '5d', from: daysAgo(8), kind: 'intraday', interval: '30min', tradingDays: 5 },
     '1m': { range: '1m', period: '1m', from: daysAgo(35), kind: 'intraday', interval: '60min', tradingDays: 22 },
     daily: { range: '6m', period: 'd', from: daysAgo(190), kind: 'daily', candles: 126, outputsize: 'compact' },
@@ -349,7 +351,7 @@ function marketRangeParams(range) {
     '1y': { range: '1y', period: '1y', from: daysAgo(370), kind: 'daily', candles: 252, outputsize: 'full' },
     '5y': { range: '5y', period: '5y', from: daysAgo(370 * 5), kind: 'daily', candles: 1260, outputsize: 'full', weekly: true },
   }
-  return table[normalized] ?? table['1m']
+  return table[normalized] ?? table['1h']
 }
 
 function daysAgo(days) {
@@ -363,7 +365,7 @@ function normalizeCandles(result) {
   if (!Array.isArray(rows)) return []
   return rows
     .map((row) => {
-      const time = String(row.time ?? row.date ?? row.datetime ?? row.timestamp ?? '').slice(0, 10)
+      const time = normalizeCandleTime(row.time ?? row.date ?? row.datetime ?? row.timestamp)
       const open = toNumber(row.open ?? row.o)
       const high = toNumber(row.high ?? row.h)
       const low = toNumber(row.low ?? row.l)
@@ -379,6 +381,15 @@ function normalizeCandles(result) {
       }
     })
     .filter(Boolean)
+}
+
+function normalizeCandleTime(value) {
+  if (typeof value === 'number') return value > 1e12 ? Math.floor(value / 1000) : value
+  const raw = String(value ?? '')
+  if (!raw) return ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw
+  const parsed = Date.parse(raw.includes('T') ? raw : raw.replace(' ', 'T'))
+  return Number.isNaN(parsed) ? raw.slice(0, 10) : Math.floor(parsed / 1000)
 }
 
 function normalizeQuote(ticker, quoteResult, ohlcvResult) {
@@ -754,7 +765,7 @@ async function handle(req, res) {
       const ticker = tickerFromPath(url.pathname, '/api/market/')
       if (!ticker) throw safeError('Ticker is required.', 400)
       requireSupportedTicker(ticker)
-      const range = url.searchParams.get('range') || '1m'
+      const range = url.searchParams.get('range') || '1h'
       const cacheKey = `${ticker}:${range}`
       const cachedBody = cached(marketCache, 'market', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)

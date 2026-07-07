@@ -342,7 +342,9 @@ function marketRangeParams(range) {
   const normalized = String(range || '1h').toLowerCase()
   const table = {
     '15m': { range: '5d', period: '5d', from: daysAgo(8), kind: 'intraday', interval: '15min', tradingDays: 5 },
+    '30m': { range: '5d', period: '5d', from: daysAgo(8), kind: 'intraday', interval: '30min', tradingDays: 5 },
     '1h': { range: '1m', period: '1m', from: daysAgo(35), kind: 'intraday', interval: '60min', tradingDays: 22 },
+    '4h': { range: '1m', period: '1m', from: daysAgo(35), kind: 'intraday', interval: '60min', tradingDays: 22, aggregate: 4 },
     '1d': { range: '1y', period: 'd', from: daysAgo(370), kind: 'daily', candles: 252, outputsize: 'full' },
     '5d': { range: '5d', period: '5d', from: daysAgo(8), kind: 'intraday', interval: '30min', tradingDays: 5 },
     '1m': { range: '1m', period: '1m', from: daysAgo(35), kind: 'intraday', interval: '60min', tradingDays: 22 },
@@ -464,6 +466,23 @@ async function normalizeIntradayCandles(result, tradingDays) {
       }
     })
     .filter(Boolean)
+}
+
+function aggregateCandles(candles, size) {
+  if (!size || size <= 1) return candles
+  const result = []
+  for (let i = 0; i < candles.length; i += size) {
+    const chunk = candles.slice(i, i + size)
+    result.push({
+      time: chunk.at(-1).time,
+      open: chunk[0].open,
+      high: Math.max(...chunk.map((candle) => candle.high)),
+      low: Math.min(...chunk.map((candle) => candle.low)),
+      close: chunk.at(-1).close,
+      volume: chunk.reduce((sum, candle) => sum + (candle.volume ?? 0), 0),
+    })
+  }
+  return result
 }
 
 function weeklyCandles(candles) {
@@ -808,7 +827,7 @@ async function handle(req, res) {
           : await normalizeDailyCandles(historyResult.value, rangeParams.candles)
         : []
       if (historyResult.status === 'rejected') dataGaps.push(`QVERIS_MARKET_GAP: historical candles unavailable (${historyResult.reason.message}).`)
-      const candles = rangeParams.weekly ? weeklyCandles(rawCandles) : rawCandles
+      const candles = rangeParams.weekly ? weeklyCandles(rawCandles) : aggregateCandles(rawCandles, rangeParams.aggregate)
       const finalCandles = candles.length ? candles : snapshot.candles
       const lastCandle = finalCandles?.at(-1)
       return json(res, 200, cacheSet(marketCache, 'market', cacheKey, {

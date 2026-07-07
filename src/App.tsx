@@ -64,7 +64,7 @@ type FormState = {
   experience_level: ExperienceLevel
 }
 
-type PriceRange = '15m' | '1h' | '1d'
+type PriceRange = '15m' | '30m' | '1h' | '4h' | '1d'
 type StrategyFilter = Direction | 'all'
 const lastTickerKey = 'qveris-last-ticker'
 const fetchCache = new Map<string, { expires: number; data: unknown }>()
@@ -139,10 +139,12 @@ const directionCardDefs: Array<{ value: Direction; key: 'bullish' | 'neutral' | 
   { value: 'volatile', key: 'volatile', icon: Zap },
 ]
 
-const priceRanges: PriceRange[] = ['15m', '1h', '1d']
+const priceRanges: PriceRange[] = ['15m', '30m', '1h', '4h', '1d']
 
 function priceRangeLabel(range: PriceRange) {
-  return range === '15m' ? '15min' : range
+  if (range === '15m') return '15min'
+  if (range === '30m') return '30min'
+  return range
 }
 
 function saveLastTicker(ticker: string) {

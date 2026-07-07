@@ -96,6 +96,37 @@ const fractional = submitPaperOrder({ ticker: 'TST', strategySnapshot: strategy,
 assert.equal(fractional.status, 422)
 assert.match(fractional.body.order.rejectReason, /positive integer/)
 
+const badLeg = submitPaperOrder(
+  {
+    ticker: 'TST',
+    strategySnapshot: { ...strategy, legs: [{ ...strategy.legs[0], quantity: -1 }] },
+    underlyingPrice: 100,
+  },
+  Date.UTC(2026, 6, 1, 14),
+)
+assert.equal(badLeg.status, 422)
+assert.match(badLeg.body.order.rejectReason, /quantity must be a positive integer/)
+
+resetPaperAccount({ initialCash: 2000 })
+const spoofedRisk = submitPaperOrder(
+  {
+    ticker: 'TST',
+    strategySnapshot: {
+      id: 'spoof-risk',
+      name: 'Spoof Risk',
+      fit: 'medium',
+      maxLoss: 1,
+      maxProfit: 100,
+      legs: [{ action: 'sell', right: 'put', strike: 100, expiration: '2026-07-17', quantity: 1, premium: 1 }],
+      guardrails: [],
+    },
+    underlyingPrice: 100,
+  },
+  Date.UTC(2026, 6, 1, 14),
+)
+assert.equal(spoofedRisk.status, 422)
+assert.match(spoofedRisk.body.order.rejectReason, /RISK_RESERVE/)
+
 const reset = resetPaperAccount({ initialCash: 250000 })
 assert.equal(reset.body.account.initialCash, 250000)
 assert.equal(reset.body.positions.length, 0)

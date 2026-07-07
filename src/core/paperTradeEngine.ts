@@ -1,9 +1,11 @@
-import { strategyEntryValue } from './payoffEngine.ts'
+import { strategyEntryValue, strategyExpirationPayoff } from './payoffEngine.ts'
 import { strategyTheoreticalValue } from './simulatorEngine.ts'
 import type { PaperOrder, PaperPosition, PaperPositionMark, PaperTradeFillSnapshot } from '../types/paperTradeTypes'
 import type { StrategyCandidate, StrategyLeg } from '../types/strategyTypes'
 
 const PAPER_TRADE_WARNING = 'This is a simulated paper trade, not a real brokerage order.'
+const PAPER_TRADE_THEORETICAL_MARK_WARNING =
+  'Paper positions are marked with a theoretical model from the underlying price, not live tradable option quotes.'
 const PAPER_TRADE_FEE_DISCLOSURE =
   'IBKR-like US options fee estimate: $0.65/contract with $1.00 minimum, plus estimated ORF/OCC/CAT/SEC/TAF where applicable. Slippage is not modeled.'
 const OPTION_COMMISSION_PER_CONTRACT = 0.65
@@ -59,6 +61,27 @@ function breakevens(strategy: StrategyCandidate) {
       : []
 }
 
+function paperId(prefix: string, now: number) {
+  return `${prefix}-${now}-${crypto.randomUUID()}`
+}
+
+function estimateExpirationRisk(legs: StrategyLeg[]) {
+  const expirations = new Set(legs.map((leg) => leg.expiration))
+  if (expirations.size !== 1) return { maxLoss: 'variable' as const, maxProfit: 'variable' as const }
+  const callSlope = legs
+    .filter((leg) => leg.right === 'call')
+    .reduce((sum, leg) => sum + (leg.action === 'buy' ? 1 : -1) * leg.quantity, 0)
+  const strikes = [...new Set(legs.map((leg) => leg.strike).filter(Number.isFinite))]
+    .sort((a, b) => a - b)
+  const payoffs = [0, ...strikes].map((price) => strategyExpirationPayoff(legs, price))
+  const minPayoff = Math.min(...payoffs)
+  const maxPayoff = Math.max(...payoffs)
+  return {
+    maxLoss: callSlope < 0 ? 'unlimited' as const : roundMoney(Math.max(0, -minPayoff)),
+    maxProfit: callSlope > 0 ? 'unlimited' as const : roundMoney(Math.max(0, maxPayoff)),
+  }
+}
+
 function capitalBase(position: PaperPosition) {
   const maxLoss = position.entrySnapshot.maxLoss
   if (typeof maxLoss === 'number' && maxLoss > 0) return maxLoss * position.quantity
@@ -93,14 +116,18 @@ export function validatePaperStrategy(strategy: StrategyCandidate, underlyingPri
     gaps.push('PAPER_TRADE_MARKET_CLOSED: US equity options paper orders are limited to regular trading hours, 09:30-16:00 ET on weekdays.')
   }
   if (!strategy.legs.length) gaps.push('PAPER_TRADE_DATA_GAP: strategy has no legs.')
-  if (typeof underlyingPrice !== 'number' || !Number.isFinite(underlyingPrice)) {
+  if (typeof underlyingPrice !== 'number' || !Number.isFinite(underlyingPrice) || underlyingPrice <= 0) {
     gaps.push('PAPER_TRADE_DATA_GAP: current underlying price is missing.')
   }
   for (const leg of strategy.legs) {
+    if (leg.action !== 'buy' && leg.action !== 'sell') gaps.push('PAPER_TRADE_INVALID_CONTRACT: leg action must be buy or sell.')
+    if (leg.right !== 'call' && leg.right !== 'put') gaps.push('PAPER_TRADE_INVALID_CONTRACT: leg right must be call or put.')
+    if (!Number.isInteger(leg.quantity) || leg.quantity < 1) gaps.push(`PAPER_TRADE_INVALID_CONTRACT: ${leg.right} ${leg.strike} quantity must be a positive integer.`)
+    if (typeof leg.strike !== 'number' || !Number.isFinite(leg.strike) || leg.strike <= 0) gaps.push('PAPER_TRADE_INVALID_CONTRACT: leg strike must be a positive number.')
     if (typeof leg.premium !== 'number' || !Number.isFinite(leg.premium) || leg.premium <= 0) {
       gaps.push(`PAPER_TRADE_DATA_GAP: ${leg.right} ${leg.strike} premium is missing.`)
     }
-    if (!leg.expiration) gaps.push(`PAPER_TRADE_DATA_GAP: ${leg.right} ${leg.strike} expiration is missing.`)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(leg.expiration)) gaps.push(`PAPER_TRADE_DATA_GAP: ${leg.right} ${leg.strike} expiration is missing.`)
     if (leg.expiration && daysUntil(leg.expiration, now) <= 0) {
       gaps.push(`PAPER_TRADE_INVALID_CONTRACT: ${leg.right} ${leg.strike} is expired.`)
     }
@@ -120,16 +147,17 @@ export function buildPaperFillSnapshot({
   now?: number
 }): PaperTradeFillSnapshot {
   const daysLeft = daysUntilEarliestLegExpiration(strategy.legs, now)
+  const risk = estimateExpirationRisk(strategy.legs)
   return {
     asOf: isoNow(now),
     underlyingPrice: roundMoney(underlyingPrice),
     daysLeft,
     strategyValue: strategyEntryValue(strategy.legs),
     fees: estimateIbkrUsOptionsFees(strategy.legs, quantity),
-    maxLoss: strategy.maxLoss,
-    maxProfit: strategy.maxProfit,
+    maxLoss: risk.maxLoss,
+    maxProfit: risk.maxProfit,
     breakevens: breakevens(strategy),
-    dataGaps: [...(strategy.dataGaps ?? []), PAPER_TRADE_WARNING, PAPER_TRADE_FEE_DISCLOSURE],
+    dataGaps: [...(strategy.dataGaps ?? []), PAPER_TRADE_WARNING, PAPER_TRADE_FEE_DISCLOSURE, PAPER_TRADE_THEORETICAL_MARK_WARNING],
     valueMethod: 'quoted_mid',
   }
 }
@@ -154,7 +182,7 @@ export function fillPaperOrder({
   const submittedAt = isoNow(now)
   const validationGaps = validatePaperStrategy(strategy, underlyingPrice, now)
   const orderBase = {
-    id: `paper-order-${now}`,
+    id: paperId('paper-order', now),
     userId,
     accountId,
     side: 'open' as const,
@@ -179,7 +207,7 @@ export function fillPaperOrder({
   const fillSnapshot = buildPaperFillSnapshot({ strategy, underlyingPrice, quantity, now })
   const order: PaperOrder = { ...orderBase, status: 'filled', filledAt: submittedAt, fillSnapshot }
   const position: PaperPosition = {
-    id: `paper-position-${now}`,
+    id: paperId('paper-position', now),
     userId,
     accountId,
     status: 'open',
@@ -209,7 +237,7 @@ export function markPaperPosition(position: PaperPosition, currentUnderlyingPric
     currentStrategyValue,
     unrealizedPnL,
     unrealizedPnLPct: base ? roundMoney((unrealizedPnL / base) * 100) : 0,
-    dataGaps: [PAPER_TRADE_WARNING],
+    dataGaps: [PAPER_TRADE_WARNING, PAPER_TRADE_THEORETICAL_MARK_WARNING],
   }
 }
 

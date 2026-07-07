@@ -541,7 +541,9 @@ function normalizeOptions(ticker, result, spot) {
   const effectiveSpot = typeof spot === 'number' && Number.isFinite(spot)
     ? spot
     : estimateSpotFromOptions(normalized)
-  if (typeof effectiveSpot !== 'number' || !Number.isFinite(effectiveSpot)) return normalized.slice(0, 500)
+  if (typeof effectiveSpot !== 'number' || !Number.isFinite(effectiveSpot)) {
+    return { contracts: normalized.slice(0, 500), effectiveSpot: null }
+  }
   const byExpiry = new Map()
   for (const contract of normalized) {
     const list = byExpiry.get(contract.expiration) ?? []
@@ -557,7 +559,7 @@ function normalizeOptions(ticker, result, spot) {
     const keep = new Set(strikes)
     pruned.push(...contracts.filter((contract) => keep.has(contract.strike)))
   }
-  return pruned.slice(0, 600)
+  return { contracts: pruned.slice(0, 600), effectiveSpot }
 }
 
 function estimateSpotFromOptions(contracts) {
@@ -850,17 +852,35 @@ async function handle(req, res) {
       const cachedBody = cached(optionsCache, 'options', ticker)
       if (cachedBody) return json(res, 200, cachedBody)
       try {
-        const raw = await qverisHeavyExecute(tools.options, { symbol: ticker, market: 'US' }, 24000)
-        const result = await parseToolContent(raw)
-        const contracts = normalizeOptions(ticker, result)
+        const [raw, quoteResult] = await Promise.allSettled([
+          qverisHeavyExecute(tools.options, { symbol: ticker, market: 'US' }, 24000),
+          qverisExecute(tools.quote, { symbol: ticker }),
+        ])
+        if (raw.status === 'rejected') throw raw.reason
+        const result = await parseToolContent(raw.value)
+        const quote = quoteResult.status === 'fulfilled' ? quoteResult.value : {}
+        const quoteSpot = toNumber(quote.c ?? quote.close ?? quote.price)
+        const { contracts, effectiveSpot } = normalizeOptions(ticker, result, quoteSpot)
+        const status = contracts.length
+          ? effectiveSpot === null ? 'partial' : 'available'
+          : 'unavailable'
+        const spotGaps = effectiveSpot === null
+          ? ['QVERIS_DATA_GAP: underlying spot unavailable; options chain is not used for contract-level recommendations.']
+          : []
+        if (quoteResult.status === 'rejected') spotGaps.push(`QVERIS_DATA_GAP: quote unavailable (${quoteResult.reason?.message ?? 'unknown error'}).`)
         return json(res, 200, cacheSet(optionsCache, 'options', ticker, {
           ticker,
-          status: contracts.length ? 'available' : 'unavailable',
+          status,
           mode: 'live',
           contracts,
           asOf: new Date().toISOString(),
-          message: contracts.length ? 'QVeris US options chain normalized.' : 'QVeris returned no normalized US option contracts.',
+          message: contracts.length
+            ? status === 'available'
+              ? 'QVeris US options chain normalized.'
+              : 'QVeris US options chain loaded without a reliable spot reference.'
+            : 'QVeris returned no normalized US option contracts.',
           dataGaps: [
+            ...spotGaps,
             'QVERIS_DATA_GAP: theta/gamma/vega may be absent when the routed provider does not return them.',
             'QVERIS_DATA_GAP: option reference master unavailable; US equity multiplier 100 remains an assumption.',
           ],

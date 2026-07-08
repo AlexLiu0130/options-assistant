@@ -142,6 +142,7 @@ export const zh: Translations = {
     empty: {
       open: '暂无持仓，请在交易页面提交模拟订单。',
       closed: '暂无平仓记录。',
+      cta: '去交易页看看',
     },
     actions: { close: '平仓', needsPrice: '需要当前价格' },
   },

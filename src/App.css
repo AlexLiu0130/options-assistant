@@ -3742,3 +3742,110 @@
     overflow-x: auto;
   }
 }
+
+/* ─── Design polish layer 2: typography, texture, empty states ────
+   Overrides earlier rules on purpose — keep at end of file. */
+
+/* Display typography: characterful headings, brand mark */
+.home-hero h1 {
+  font-family: var(--font-display);
+  font-size: 50px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.oa-brand strong {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.edu-detail-titles h3 {
+  font-family: var(--font-display);
+  font-size: 20px;
+}
+
+/* Home: subtle dot-grid texture over the gradient washes */
+.home-shell::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(rgba(31, 42, 61, 0.06) 1px, transparent 1px);
+  background-size: 26px 26px;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 38%, black, transparent 72%);
+  mask-image: radial-gradient(ellipse at 50% 38%, black, transparent 72%);
+  pointer-events: none;
+}
+.home-features { position: relative; }
+
+/* Feature cards: arrow affordance on hover */
+.home-feature-card { position: relative; }
+.home-feature-card::after {
+  content: '→';
+  position: absolute;
+  right: 18px;
+  bottom: 14px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--fc);
+  opacity: 0;
+  transform: translateX(-6px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.home-feature-card:hover::after { opacity: 1; transform: translateX(0); }
+
+/* Paper portfolio: welcoming empty state */
+.pp-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 64px 24px;
+  background:
+    radial-gradient(circle at 50% 0%, var(--accent-soft), transparent 60%),
+    var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+}
+.pp-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+.pp-empty p { margin: 0; font-size: 13.5px; color: var(--muted); }
+.pp-empty-cta {
+  margin-top: 12px;
+  padding: 9px 20px;
+  border: none;
+  border-radius: 9px;
+  background: var(--accent-grad);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(11, 122, 59, 0.25);
+  transition: transform 0.12s, box-shadow 0.12s;
+}
+.pp-empty-cta:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(11, 122, 59, 0.32); }
+
+/* Education list: accent edge on active item */
+.edu-list-item { position: relative; }
+.edu-list-item.active { box-shadow: var(--shadow-sm); }
+.edu-list-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+
+/* Direction cards: hover lift */
+.direction-cards button:hover { transform: translateY(-1px); }
+.direction-cards button.active:hover { transform: scale(1.04); }

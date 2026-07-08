@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&display=swap');
 
 :root {
   --bg: #f5f8fc;
@@ -20,6 +20,7 @@
   --shadow-md: 0 2px 4px rgba(31, 42, 61, 0.05), 0 8px 22px rgba(31, 42, 61, 0.08);
   --shadow-lg: 0 4px 16px rgba(15, 23, 42, 0.08), 0 24px 64px rgba(15, 23, 42, 0.22);
   --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', monospace;
+  --font-display: 'Bricolage Grotesque', 'Noto Sans SC', 'PingFang SC', sans-serif;
   font-family: 'Inter', 'Source Han Sans SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', ui-sans-serif, system-ui, sans-serif;
   color: var(--text);
   background: var(--bg);

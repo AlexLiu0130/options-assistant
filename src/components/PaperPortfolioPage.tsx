@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import { Briefcase, GraduationCap, LineChart, RefreshCw, RotateCcw, X } from 'lucide-react'
+import { Briefcase, GraduationCap, Inbox, LineChart, RefreshCw, RotateCcw, X } from 'lucide-react'
 import { closePaperPosition, getPaperAccountWithMarketPrices, resetPaperAccount } from '../core/paperTradeApi'
 import type { PaperAccountResponse, PaperPositionRow } from '../core/paperTradeApi'
 import type { PaperPosition } from '../types/paperTradeTypes'
@@ -193,7 +193,15 @@ function OpenTable({ positions, onClose }: { positions: PaperPositionRow[]; onCl
   }
 
   if (!positions.length) {
-    return <p className="pp-empty">{t.paper.empty.open}</p>
+    return (
+      <div className="pp-empty">
+        <span className="pp-empty-icon"><Inbox size={24} /></span>
+        <p>{t.paper.empty.open}</p>
+        <button className="pp-empty-cta" type="button" onClick={() => { window.location.hash = '#/trade' }}>
+          {t.paper.empty.cta}
+        </button>
+      </div>
+    )
   }
 
   const COLS = 9
@@ -264,7 +272,12 @@ function ClosedTable({ positions }: { positions: PaperPosition[] }) {
   function toggle(id: string) { setExpanded((cur) => cur === id ? '' : id) }
 
   if (!positions.length) {
-    return <p className="pp-empty">{t.paper.empty.closed}</p>
+    return (
+      <div className="pp-empty">
+        <span className="pp-empty-icon"><Inbox size={24} /></span>
+        <p>{t.paper.empty.closed}</p>
+      </div>
+    )
   }
 
   const COLS = 8

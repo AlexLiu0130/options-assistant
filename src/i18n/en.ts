@@ -150,6 +150,7 @@ export const en = {
     empty: {
       open: 'No open positions. Submit a paper order from the trading page.',
       closed: 'No closed positions yet.',
+      cta: 'Go to trading',
     },
     actions: { close: 'Close', needsPrice: 'Needs price' },
   },

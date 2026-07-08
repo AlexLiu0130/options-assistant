@@ -633,6 +633,7 @@ function normalizeEvents(ticker, earningsResult, filingsResult) {
       reportUrl: String(row.reportUrl ?? ''),
       filingUrl: String(row.filingUrl ?? ''),
     })),
+    dataGaps: [],
   }
 }
 
@@ -798,8 +799,7 @@ async function handle(req, res) {
       const cachedBody = cached(marketCache, 'market', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)
       const rangeParams = marketRangeParams(range)
-      const [quoteResult, ohlcvResult, historyResult] = await Promise.allSettled([
-        qverisExecute(tools.quote, { symbol: ticker }),
+      const [ohlcvResult, historyResult] = await Promise.allSettled([
         qverisExecute(tools.ohlcv, {
           symbol: `${ticker}.US`,
           fmt: 'json',
@@ -825,11 +825,9 @@ async function handle(req, res) {
           }, rangeParams.outputsize === 'full' ? 50000 : 60000),
       ])
       const dataGaps = []
-      const quote = quoteResult.status === 'fulfilled' ? quoteResult.value : {}
       const ohlcv = ohlcvResult.status === 'fulfilled' ? ohlcvResult.value : {}
-      if (quoteResult.status === 'rejected') dataGaps.push(`QVERIS_MARKET_GAP: quote unavailable (${quoteResult.reason.message}).`)
       if (ohlcvResult.status === 'rejected') dataGaps.push(`QVERIS_MARKET_GAP: realtime OHLC unavailable (${ohlcvResult.reason.message}).`)
-      const snapshot = normalizeQuote(ticker, quote, ohlcv)
+      const snapshot = normalizeQuote(ticker, {}, ohlcv)
       const rawCandles = historyResult.status === 'fulfilled'
         ? rangeParams.kind === 'intraday'
           ? await normalizeIntradayCandles(historyResult.value, rangeParams.tradingDays)
@@ -859,16 +857,14 @@ async function handle(req, res) {
       const cachedBody = cached(optionsCache, 'options', ticker)
       if (cachedBody) return json(res, 200, cachedBody)
       try {
-        const [raw, quoteResult, ohlcvResult] = await Promise.allSettled([
+        const [raw, ohlcvResult] = await Promise.allSettled([
           qverisHeavyExecute(tools.options, { symbol: ticker, market: 'US' }, 24000),
-          qverisExecute(tools.quote, { symbol: ticker }),
           qverisExecute(tools.ohlcv, { symbol: `${ticker}.US`, fmt: 'json' }),
         ])
         if (raw.status === 'rejected') throw raw.reason
         const result = await parseToolContent(raw.value)
-        const quote = quoteResult.status === 'fulfilled' ? quoteResult.value : {}
         const ohlcv = ohlcvResult.status === 'fulfilled' ? ohlcvResult.value : {}
-        const quoteSpot = toNumber(quote.c ?? quote.close ?? quote.price ?? ohlcv.close)
+        const quoteSpot = toNumber(ohlcv.close)
         const { contracts, effectiveSpot } = normalizeOptions(ticker, result, quoteSpot)
         const status = contracts.length
           ? effectiveSpot === null ? 'partial' : 'available'
@@ -876,9 +872,7 @@ async function handle(req, res) {
         const spotGaps = effectiveSpot === null
           ? ['QVERIS_DATA_GAP: underlying spot unavailable; options chain is not used for contract-level recommendations.']
           : []
-        if (quoteResult.status === 'rejected' && ohlcvResult.status === 'rejected') {
-          spotGaps.push(`QVERIS_DATA_GAP: spot quote unavailable (${quoteResult.reason?.message ?? 'unknown error'}).`)
-        }
+        if (ohlcvResult.status === 'rejected') spotGaps.push(`QVERIS_DATA_GAP: spot quote unavailable (${ohlcvResult.reason?.message ?? 'unknown error'}).`)
         return json(res, 200, cacheSet(optionsCache, 'options', ticker, {
           ticker,
           status,
@@ -914,9 +908,20 @@ async function handle(req, res) {
       requireSupportedTicker(ticker)
       const today = new Date().toISOString().slice(0, 10)
       const future = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-      const earnings = await qverisExecute(tools.earnings, { symbol: ticker, from: today, to: future })
-      const filings = await qverisExecute(tools.filings, { symbol: ticker, form: '8-K', from: today.slice(0, 4) + '-01-01', to: today }, 30000)
-      return json(res, 200, normalizeEvents(ticker, earnings, filings))
+      const [earningsResult, filingsResult] = await Promise.allSettled([
+        qverisExecute(tools.earnings, { symbol: ticker, from: today, to: future }),
+        qverisExecute(tools.filings, { symbol: ticker, form: '8-K', from: today.slice(0, 4) + '-01-01', to: today }, 30000),
+      ])
+      const body = normalizeEvents(
+        ticker,
+        earningsResult.status === 'fulfilled' ? earningsResult.value : {},
+        filingsResult.status === 'fulfilled' ? filingsResult.value : [],
+      )
+      body.dataGaps = [
+        ...(earningsResult.status === 'rejected' ? [`QVERIS_EVENTS_GAP: earnings unavailable (${earningsResult.reason?.message ?? 'unknown error'}).`] : []),
+        ...(filingsResult.status === 'rejected' ? [`QVERIS_EVENTS_GAP: filings unavailable (${filingsResult.reason?.message ?? 'unknown error'}).`] : []),
+      ]
+      return json(res, 200, body)
     }
 
     if (url.pathname.startsWith('/api/volatility/')) {
@@ -937,7 +942,7 @@ async function handle(req, res) {
 
 if (process.argv.includes('--smoke')) {
   const ticker = process.argv.at(-1)?.startsWith('--') ? 'NVDA' : process.argv.at(-1) || 'NVDA'
-  const market = await qverisExecute(tools.quote, { symbol: ticker.toUpperCase() })
+  const market = await qverisExecute(tools.ohlcv, { symbol: `${ticker.toUpperCase()}.US`, fmt: 'json' })
   console.log(JSON.stringify({ ok: true, ticker: ticker.toUpperCase(), fields: Object.keys(market).sort() }, null, 2))
 } else {
   createServer(handle).listen(port, host, () => {

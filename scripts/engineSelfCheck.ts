@@ -174,6 +174,19 @@ assert.deepEqual(
   recommendStrategyTypes(viewFor('bullish'), optionsFixture, chainExpiration, { rank: false }).map((item) => item.id),
   ['long-call', 'bull-call-spread', 'cash-secured-put', 'bull-put-spread', 'long-call-butterfly'],
 )
+const noOtmPutFixture = {
+  ...optionsFixture,
+  contracts: optionsFixture.contracts.map((item) =>
+    item.right === 'put' ? { ...item, strike: (item.strike ?? 0) + 50, symbol: `${item.symbol}ITM` } : item,
+  ),
+}
+assert.ok(!recommendStrategyTypes(viewFor('bullish'), noOtmPutFixture, chainExpiration, { rank: false }).some((item) => item.id === 'cash-secured-put'))
+assert.ok(!recommendStrategyTypes(viewFor('bullish'), noOtmPutFixture, chainExpiration, { rank: false }).some((item) => item.id === 'bull-put-spread'))
+const farStrikeFixture = {
+  ...optionsFixture,
+  contracts: optionsFixture.contracts.map((item) => ({ ...item, strike: (item.strike ?? 0) + 1000, symbol: `${item.symbol}FAR` })),
+}
+assert.ok(recommendStrategyTypes(viewFor('bullish'), farStrikeFixture, chainExpiration, { rank: false }).every((item) => item.status !== 'contract_ready'))
 assert.deepEqual(
   recommendStrategyTypes(viewFor('bearish'), optionsFixture, chainExpiration).map((item) => item.id),
   ['bear-put-spread', 'bear-call-spread', 'long-put', 'long-put-butterfly'],

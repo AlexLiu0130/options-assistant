@@ -260,7 +260,12 @@ function bestCreditSpread(
   view: ParsedView,
   side: 'call' | 'put',
 ) {
-  const shortCandidates = contracts.filter((contract) => {
+  const shortable = contracts.filter((contract) =>
+    side === 'call'
+      ? (contract.strike ?? 0) > view.current_price
+      : (contract.strike ?? 0) < view.current_price,
+  )
+  const shortCandidates = shortable.filter((contract) => {
     const absDelta = Math.abs(contract.delta ?? 0)
     return absDelta >= 0.16 && absDelta <= 0.25
   })
@@ -288,9 +293,22 @@ function bestCreditSpread(
         }),
     )
   const pairs = buildPairs(shortCandidates)
-  return (pairs.length ? pairs : buildPairs(contracts))
+  return (pairs.length ? pairs : buildPairs(shortable))
     .filter((pair): pair is { shortLeg: QverisOptionContract; longLeg: QverisOptionContract; score: number } => Boolean(pair))
     .sort((a, b) => a.score - b.score)[0]
+}
+
+function bestCashSecuredPut(puts: QverisOptionContract[], view: ParsedView) {
+  const otm = puts.filter((contract) => {
+    const strike = contract.strike ?? 0
+    return strike < view.current_price && strike >= view.current_price * 0.7
+  })
+  if (!otm.length) return undefined
+  const targetDelta = otm.filter((contract) => {
+    const absDelta = Math.abs(contract.delta ?? 0)
+    return absDelta >= 0.2 && absDelta <= 0.35
+  })
+  return nearest(targetDelta.length ? targetDelta : otm, view.current_price * 0.97)
 }
 
 function longButterflyParts(contracts: QverisOptionContract[], target: number) {
@@ -356,6 +374,11 @@ function educationCandidate(
     dataGaps: [optionGap],
     ...candidate,
   }
+}
+
+function hasUsableStrikeCoverage(strategy: StrategyCandidate, view: ParsedView) {
+  if (!strategy.legs.length) return true
+  return strategy.legs.some((leg) => leg.strike >= view.current_price * 0.5 && leg.strike <= view.current_price * 1.5)
 }
 
 function legContracts(strategy: StrategyCandidate, options?: QverisOptionsResponse) {
@@ -1129,7 +1152,7 @@ function cashSecuredPut(
 ): StrategyCandidate | undefined {
   const expiry = expiration(options, preferredExpiration, sellDte)
   if (!expiry) return undefined
-  const sell = byAbsDelta(contractsFor(options, 'put', expiry), 0.2, 0.35, view.current_price * 0.97)
+  const sell = bestCashSecuredPut(contractsFor(options, 'put', expiry), view)
   if (!sell?.strike) return undefined
   const legs = [leg('sell', sell)]
   const premium = legs[0].premium ?? 0
@@ -1423,7 +1446,11 @@ export function recommendStrategyTypes(
                 bullPutSpread(view, options, preferredExpiration),
                 longCallButterfly(view, options, preferredExpiration),
               ]
-    const ready = finish(contractCandidates.filter((item): item is StrategyCandidate => Boolean(item)))
+    const ready = finish(
+      contractCandidates
+        .filter((item): item is StrategyCandidate => Boolean(item))
+        .filter((item) => hasUsableStrikeCoverage(item, view)),
+    )
     if (ready.length) return ready
   }
 

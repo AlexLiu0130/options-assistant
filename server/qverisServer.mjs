@@ -563,8 +563,15 @@ function normalizeOptions(ticker, result, spot) {
 }
 
 function estimateSpotFromOptions(contracts) {
-  const contract = contracts
+  const today = Date.parse(new Date().toISOString().slice(0, 10))
+  const withDte = contracts
     .filter((item) => typeof item.delta === 'number' && typeof item.strike === 'number')
+    .map((item) => ({
+      ...item,
+      dte: Math.ceil((Date.parse(`${item.expiration}T00:00:00Z`) - today) / 86400000),
+    }))
+  const nearTerm = withDte.filter((item) => item.dte >= 7 && item.dte <= 60)
+  const contract = (nearTerm.length ? nearTerm : withDte)
     .sort((a, b) => Math.abs(Math.abs(a.delta) - 0.5) - Math.abs(Math.abs(b.delta) - 0.5))[0]
   return contract?.strike
 }

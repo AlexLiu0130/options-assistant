@@ -323,6 +323,10 @@ function leg(action: 'buy' | 'sell', contract: QverisOptionContract): StrategyLe
     quantity: 1,
     premium: mid(contract),
     impliedVolatility: contract.impliedVolatility ?? undefined,
+    delta: contract.delta,
+    gamma: contract.gamma,
+    theta: contract.theta,
+    vega: contract.vega,
     symbol: contract.symbol,
   }
 }

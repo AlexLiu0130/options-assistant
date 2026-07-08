@@ -20,6 +20,7 @@ export type GreeksQuadChart = {
   source: 'model'
   underlyingPrice: number
   daysLeft: number
+  marketMetrics: GreeksMetric[]
   panels: GreeksChartPanel[]
   warnings: string[]
 }
@@ -97,6 +98,11 @@ function greeksAt(legs: StrategyLeg[], price: number, daysLeft: number) {
   }
 }
 
+function hasMarketGreek(legs: StrategyLeg[], metric: GreeksMetric) {
+  const values = legs.map((leg) => leg[metric])
+  return values.length > 0 && values.every((value) => typeof value === 'number' && Number.isFinite(value))
+}
+
 export function buildGreeksQuadChart({
   strategy,
   underlyingPrice,
@@ -127,10 +133,12 @@ export function buildGreeksQuadChart({
     currentValue: current[metric],
     points: rows.map((row) => ({ underlyingPrice: row.price, value: row.greeks[metric] })),
   })
+  const metrics: GreeksMetric[] = ['delta', 'gamma', 'theta', 'vega']
   return {
     source: 'model',
     underlyingPrice: round(underlyingPrice, 2),
     daysLeft: Math.max(0, daysLeft),
+    marketMetrics: metrics.filter((metric) => hasMarketGreek(strategy.legs, metric)),
     panels: [
       panel('delta', 'Delta', '$ P/L per $1 move'),
       panel('gamma', 'Gamma', 'delta change per $1 move'),

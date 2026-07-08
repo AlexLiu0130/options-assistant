@@ -51,6 +51,10 @@ function withContract(leg: StrategyLeg, contract: QverisOptionContract): Strateg
     ...leg,
     premium: mid(contract),
     impliedVolatility: contract.impliedVolatility ?? leg.impliedVolatility,
+    delta: contract.delta,
+    gamma: contract.gamma,
+    theta: contract.theta,
+    vega: contract.vega,
     symbol: contract.symbol,
   }
 }

@@ -51,6 +51,10 @@ export interface StrategyLeg {
   quantity: number
   premium?: number
   impliedVolatility?: number
+  delta?: number | null
+  gamma?: number | null
+  theta?: number | null
+  vega?: number | null
   symbol?: string
 }
 

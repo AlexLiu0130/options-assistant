@@ -67,6 +67,13 @@ const greeksChart = buildGreeksQuadChart({ strategy, underlyingPrice: 110, daysL
 assert.deepEqual(greeksChart.panels.map((panel) => panel.metric), ['delta', 'gamma', 'theta', 'vega'])
 assert.ok(greeksChart.panels.every((panel) => panel.points.length === 61))
 assert.ok(greeksChart.panels.find((panel) => panel.metric === 'delta')?.currentValue)
+const mixedSourceGreeks = buildGreeksQuadChart({
+  strategy: { ...strategy, legs: [{ ...call, delta: 0.5 }] },
+  underlyingPrice: 110,
+  daysLeft: 30,
+})
+assert.equal(mixedSourceGreeks.marketMetrics.includes('delta'), true)
+assert.notEqual(mixedSourceGreeks.panels.find((panel) => panel.metric === 'delta')?.currentValue, 50)
 const syntheticLongGreeks = buildGreeksQuadChart({
   strategy: {
     ...strategy,

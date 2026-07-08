@@ -178,9 +178,16 @@ export function GreeksQuadChart({
 
   const primary = chart.panels.filter((p) => p.metric === 'delta' || p.metric === 'theta')
   const secondary = chart.panels.filter((p) => p.metric === 'gamma' || p.metric === 'vega')
-
   const labelFor = (metric: string) =>
     g[metric as 'delta' | 'gamma' | 'theta' | 'vega'] ?? metric.toUpperCase()
+  const marketMetrics = chart.marketMetrics.map((metric) => labelFor(metric))
+  const isZh = g.modelBadge.includes('模型')
+  const badge = marketMetrics.length
+    ? isZh
+      ? `链路含 ${marketMetrics.join('/')} · 曲线为模型`
+      : `Chain has ${marketMetrics.join('/')} · model curve`
+    : g.modelBadge
+
   const descFor = (metric: string) =>
     g[`${metric}Desc` as 'deltaDesc' | 'gammaDesc' | 'thetaDesc' | 'vegaDesc'] ?? ''
 
@@ -211,7 +218,7 @@ export function GreeksQuadChart({
     <div className="gq-wrap">
       <div className="gq-header">
         <span className="gq-title">{g.title}</span>
-        <span className="gq-model-badge">{g.modelBadge}</span>
+        <span className="gq-model-badge">{badge}</span>
       </div>
       <div className="gq-grid">
         {primary.map((p, i) => <PanelCard key={p.metric} panel={p} idx={i} />)}

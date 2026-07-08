@@ -859,14 +859,16 @@ async function handle(req, res) {
       const cachedBody = cached(optionsCache, 'options', ticker)
       if (cachedBody) return json(res, 200, cachedBody)
       try {
-        const [raw, quoteResult] = await Promise.allSettled([
+        const [raw, quoteResult, ohlcvResult] = await Promise.allSettled([
           qverisHeavyExecute(tools.options, { symbol: ticker, market: 'US' }, 24000),
           qverisExecute(tools.quote, { symbol: ticker }),
+          qverisExecute(tools.ohlcv, { symbol: `${ticker}.US`, fmt: 'json' }),
         ])
         if (raw.status === 'rejected') throw raw.reason
         const result = await parseToolContent(raw.value)
         const quote = quoteResult.status === 'fulfilled' ? quoteResult.value : {}
-        const quoteSpot = toNumber(quote.c ?? quote.close ?? quote.price)
+        const ohlcv = ohlcvResult.status === 'fulfilled' ? ohlcvResult.value : {}
+        const quoteSpot = toNumber(quote.c ?? quote.close ?? quote.price ?? ohlcv.close)
         const { contracts, effectiveSpot } = normalizeOptions(ticker, result, quoteSpot)
         const status = contracts.length
           ? effectiveSpot === null ? 'partial' : 'available'
@@ -874,7 +876,9 @@ async function handle(req, res) {
         const spotGaps = effectiveSpot === null
           ? ['QVERIS_DATA_GAP: underlying spot unavailable; options chain is not used for contract-level recommendations.']
           : []
-        if (quoteResult.status === 'rejected') spotGaps.push(`QVERIS_DATA_GAP: quote unavailable (${quoteResult.reason?.message ?? 'unknown error'}).`)
+        if (quoteResult.status === 'rejected' && ohlcvResult.status === 'rejected') {
+          spotGaps.push(`QVERIS_DATA_GAP: spot quote unavailable (${quoteResult.reason?.message ?? 'unknown error'}).`)
+        }
         return json(res, 200, cacheSet(optionsCache, 'options', ticker, {
           ticker,
           status,

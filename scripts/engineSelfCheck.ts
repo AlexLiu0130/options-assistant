@@ -212,8 +212,19 @@ const adjustedSpread = adjustStrategyLegs({
 })
 assert.deepEqual(adjustedSpread.errors, [])
 assert.equal(adjustedSpread.strategy?.legs[1]?.strike, 110)
+assert.notEqual(adjustedSpread.strategy?.probabilityOfProfit, budgetRanked[0].probabilityOfProfit)
 assert.ok(adjustedSpread.riskChecklist?.length)
 assert.equal(adjustedSpread.greeksQuadChart?.panels.length, 4)
+const originalLongCall = recommendStrategyTypes(viewFor('bullish'), optionsFixture, chainExpiration, { rank: false }).find((item) => item.id === 'long-call')!
+const adjustedExpiry = adjustStrategyLegs({
+  baseStrategy: originalLongCall,
+  optionChain: optionsFixture,
+  view,
+  adjustments: [{ legIndex: 0, expiration: backExpiration, strike: 105 }],
+})
+assert.deepEqual(adjustedExpiry.errors, [])
+assert.equal(adjustedExpiry.strategy?.expectedMove?.dte, Math.max(1, Math.round((new Date(`${backExpiration}T21:00:00Z`).getTime() - Date.now()) / 86_400_000)))
+assert.notEqual(adjustedExpiry.strategy?.probabilityOfProfit, originalLongCall.probabilityOfProfit)
 assert.ok(
   adjustStrategyLegs({
     baseStrategy: budgetRanked[0],

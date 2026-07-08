@@ -77,7 +77,7 @@ function probabilityBetween(low: number, high: number, spot: number, iv: number,
   return Math.max(0, Math.min(1, lognormalCdf(high, spot, iv, dte) - lognormalCdf(low, spot, iv, dte)))
 }
 
-function probabilityOfProfit(legs: StrategyLeg[], spot: number, iv: number, dte: number) {
+export function probabilityOfProfit(legs: StrategyLeg[], spot: number, iv: number, dte: number) {
   if (!legs.length) return undefined
   const low = spot * 0.45
   const high = spot * 1.75

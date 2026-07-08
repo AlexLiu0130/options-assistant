@@ -5,6 +5,7 @@ import { buildScenarioRows, scenarioTargetPrice } from './scenarioEngine.ts'
 import { buildSimulatorChartProjection, type SimulatorChartProjection } from './simulatorChartEngine.ts'
 import { buildGreeksQuadChart, type GreeksQuadChart } from './greeksChartEngine.ts'
 import { buildRiskChecklist, type RiskChecklistRow } from './riskChecklistEngine.ts'
+import { probabilityOfProfit } from './strategyRecommendationEngine.ts'
 
 export type StrategyLegAdjustment = {
   legIndex: number
@@ -89,8 +90,27 @@ function breakevens(legs: StrategyLeg[], spot: number) {
   return [...new Set(results.map((price) => Number(price.toFixed(2))))].slice(0, 4)
 }
 
-function firstDte(strategy: StrategyCandidate) {
-  return strategy.expectedMove?.dte ?? 30
+function daysToEarliestExpiry(legs: StrategyLeg[]) {
+  const expiries = legs
+    .map((leg) => new Date(`${leg.expiration}T21:00:00Z`).getTime())
+    .filter(Number.isFinite)
+  if (!expiries.length) return 30
+  return Math.max(1, Math.round((Math.min(...expiries) - Date.now()) / 86_400_000))
+}
+
+function averageIv(legs: StrategyLeg[], fallback: number) {
+  const ivs = legs.map((leg) => leg.impliedVolatility).filter((iv): iv is number => typeof iv === 'number' && iv > 0)
+  return ivs.length ? ivs.reduce((sum, iv) => sum + iv, 0) / ivs.length : fallback
+}
+
+function expectedMoveFor(spot: number, iv: number, dte: number) {
+  const move = spot * iv * Math.sqrt(dte / 365)
+  return {
+    low: Number((spot - move).toFixed(2)),
+    high: Number((spot + move).toFixed(2)),
+    impliedVolatility: Number(iv.toFixed(4)),
+    dte,
+  }
 }
 
 export function adjustStrategyLegs({
@@ -141,6 +161,8 @@ export function adjustStrategyLegs({
   const bounds = payoffBounds(pricedLegs, view.current_price, baseStrategy)
   const nextBreakevens = breakevens(pricedLegs, view.current_price)
   const primaryBreakeven = nextBreakevens[0]
+  const daysLeft = daysToEarliestExpiry(pricedLegs)
+  const impliedVolatility = averageIv(pricedLegs, baseStrategy.expectedMove?.impliedVolatility ?? 0.35)
   if (!nextBreakevens.length) warnings.push('NO_BREAKEVEN_IN_MODELED_RANGE')
 
   const strategy: StrategyCandidate = {
@@ -151,10 +173,11 @@ export function adjustStrategyLegs({
     maxProfit: bounds.maxProfit,
     breakeven: primaryBreakeven,
     breakevens: nextBreakevens,
+    probabilityOfProfit: probabilityOfProfit(pricedLegs, view.current_price, impliedVolatility, daysLeft),
+    expectedMove: expectedMoveFor(view.current_price, impliedVolatility, daysLeft),
     targetPricePl: strategyExpirationPayoff(pricedLegs, scenarioTargetPrice(view)),
     scenarioRows: buildScenarioRows(view, pricedLegs, primaryBreakeven),
   }
-  const daysLeft = firstDte(strategy)
   return {
     strategy,
     riskChecklist: buildRiskChecklist(strategy),

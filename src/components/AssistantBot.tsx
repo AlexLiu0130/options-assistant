@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Bot, Loader2, Send, X } from 'lucide-react'
 import {
   buildAssistantContext,
@@ -32,6 +32,12 @@ const chips = {
     ['新手解释', '用新手能理解的方式解释。'],
   ],
 } as const
+
+function intro(lang: 'en' | 'zh') {
+  return lang === 'zh'
+    ? '请告诉我您的市场观点、时间周期和最大可承受亏损。我将在 Qveris 策略和风险规则范围内为您提供建议。'
+    : 'Tell me your market view, time horizon, and maximum loss. I will stay within Qveris strategy and risk limits.'
+}
 
 function renderAssistantAnswer(answer: AssistantChatResponse, lang: 'en' | 'zh') {
   return [
@@ -67,11 +73,15 @@ export function AssistantBot({
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      content: lang === 'zh'
-        ? '请告诉我您的市场观点、时间周期和最大可承受亏损。我将在 Qveris 策略和风险规则范围内为您提供建议。'
-        : 'Tell me your market view, time horizon, and maximum loss. I will stay within Qveris strategy and risk limits.',
+      content: intro(lang),
     },
   ])
+
+  useEffect(() => {
+    setMessages((current) => current.length === 1 && current[0].role === 'assistant'
+      ? [{ role: 'assistant', content: intro(lang) }]
+      : current)
+  }, [lang])
 
   async function send(text = input) {
     const userMessage = text.trim()
@@ -125,7 +135,7 @@ export function AssistantBot({
           <header>
             <div>
               <strong>Qveris AI</strong>
-              <span>{ticker} · {parsedView.view} · {parsedView.time_horizon} · Risk {parsedView.risk_budget ? `$${parsedView.risk_budget}` : 'pending'}</span>
+              <span>{ticker} · {parsedView.view} · {parsedView.time_horizon} · {lang === 'zh' ? '风险' : 'Risk'} {parsedView.risk_budget ? `$${parsedView.risk_budget}` : (lang === 'zh' ? '待填写' : 'pending')}</span>
             </div>
             <button type="button" onClick={() => setOpen(false)} aria-label="Close Qveris AI"><X size={17} /></button>
           </header>

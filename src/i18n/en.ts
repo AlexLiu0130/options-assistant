@@ -192,6 +192,7 @@ export const en = {
     cta: 'Get started',
     unsupported: (ticker: string) => `${ticker} is not in the current Qveris options universe. We support 100 high-volume stocks and 20 ETFs for now.`,
     universeNote: 'Currently supports 100 high-option-volume US stocks and 20 ETFs.',
+    resumePaper: (n: number) => `Resume paper portfolio · ${n} open`,
     tryLabel: 'Try',
     featMarket: 'Market & Option Chain',
     featMarketDesc: 'Candles, expected move, and a full options chain on one screen.',

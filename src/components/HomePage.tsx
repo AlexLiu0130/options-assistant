@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
 import { GraduationCap, Briefcase, CandlestickChart, Search, Sparkles } from 'lucide-react'
+import { getPaperAccount } from '../core/paperTradeApi'
 import { isSupportedUnderlying } from '../core/supportedUnderlyings'
 import { useT } from '../i18n'
 
@@ -76,6 +77,7 @@ export function HomePage() {
   const h = t.home
   const [ticker, setTicker] = useState('')
   const [error, setError] = useState('')
+  const [openPositions, setOpenPositions] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -88,6 +90,12 @@ export function HomePage() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  useEffect(() => {
+    void getPaperAccount()
+      .then((account) => setOpenPositions(account.summary.openCount))
+      .catch(() => setOpenPositions(0))
   }, [])
 
   function go(value: string) {
@@ -148,6 +156,11 @@ export function HomePage() {
           </form>
           {error ? <p className="home-search-error">{error}</p> : null}
           <p className="home-universe-note">{h.universeNote}</p>
+          {openPositions > 0 && (
+            <button className="home-paper-resume" type="button" onClick={() => navigate('#/paper')}>
+              {h.resumePaper(openPositions)}
+            </button>
+          )}
 
           <div className="home-quick home-anim" style={{ animationDelay: '240ms' }}>
             <span>{h.tryLabel}</span>

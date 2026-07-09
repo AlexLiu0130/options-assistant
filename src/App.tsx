@@ -9,6 +9,7 @@ import {
   MoreHorizontal,
   RotateCcw,
   Search,
+  Moon,
   Sun,
   Waves,
   Zap,
@@ -223,21 +224,29 @@ function normalizeExperience(value?: string): ExperienceLevel | undefined {
 
 function App() {
   const hash = useHash()
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    try { return localStorage.getItem('qveris-theme') === 'dark' ? 'dark' : 'light' } catch { return 'light' }
+  })
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    try { localStorage.setItem('qveris-theme', theme) } catch {}
+  }, [theme])
+  const toggleTheme = () => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))
   if (hash === '#/paper') {
-    return <PaperPortfolioPage />
+    return <PaperPortfolioPage theme={theme} onToggleTheme={toggleTheme} />
   }
   if (hash === '#/learn') {
-    return <StrategyEducationPage />
+    return <StrategyEducationPage theme={theme} onToggleTheme={toggleTheme} />
   }
   if (hash.startsWith('#/trade')) {
     const params = new URLSearchParams(hash.split('?')[1] ?? '')
-    return <TradingPage initialTicker={(params.get('ticker') ?? '').trim().toUpperCase()} />
+    return <TradingPage initialTicker={(params.get('ticker') ?? '').trim().toUpperCase()} theme={theme} onToggleTheme={toggleTheme} />
   }
 
-  return <HomePage />
+  return <HomePage theme={theme} onToggleTheme={toggleTheme} />
 }
 
-function TradingPage({ initialTicker }: { initialTicker: string }) {
+function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: string; theme: 'light' | 'dark'; onToggleTheme: () => void }) {
   const { t, lang, setLang } = useT()
   const [startForm] = useState<FormState>(() => ({
     ...initialForm,
@@ -443,9 +452,10 @@ function TradingPage({ initialTicker }: { initialTicker: string }) {
           <strong>Qveris</strong>
           <span>AI</span>
         </button>
-        <span className="data-source-badge">{t.topbar.qveris}</span>
         <div className="oa-top-spacer" />
-        <Sun size={18} />
+        <button className="theme-toggle" type="button" onClick={onToggleTheme} aria-label="Toggle dark mode">
+          {theme === 'dark' ? <Moon size={16} /> : <Sun size={16} />}
+        </button>
         <div className="lang-toggle">
           <button className={lang === 'en' ? 'active' : ''} type="button" onClick={() => setLang('en')}>EN</button>
           <button className={lang === 'zh' ? 'active' : ''} type="button" onClick={() => setLang('zh')}>中</button>

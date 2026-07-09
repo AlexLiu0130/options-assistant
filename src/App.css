@@ -3127,6 +3127,52 @@
   background: var(--accent-grad);
   color: #fff;
 }
+.oa-topbar .oa-brand-button,
+.home-topbar .oa-brand-button {
+  height: auto;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+}
+.theme-toggle {
+  width: 32px;
+  height: 32px !important;
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.theme-toggle svg {
+  color: var(--muted);
+}
+.theme-toggle:hover svg {
+  color: var(--text);
+}
+
+:root[data-theme='dark'] .chain-matrix th,
+:root[data-theme='dark'] .chain-matrix tbody tr:hover td {
+  background: var(--surface-2);
+}
+:root[data-theme='dark'] .chain-groups th {
+  background: var(--surface) !important;
+}
+:root[data-theme='dark'] .chain-matrix .strike-head,
+:root[data-theme='dark'] .chain-matrix .strike-col {
+  background: #22314a !important;
+  border-color: #33445f !important;
+}
+:root[data-theme='dark'] .chain-matrix tbody tr.selected td,
+:root[data-theme='dark'] .chain-matrix tbody tr.spot-row td {
+  background: rgba(34, 197, 94, 0.08);
+}
+:root[data-theme='dark'] .chain-matrix tbody tr.selected .strike-col,
+:root[data-theme='dark'] .chain-matrix tbody tr.spot-row .strike-col {
+  background: rgba(34, 197, 94, 0.18) !important;
+  color: var(--accent) !important;
+}
 
 /* Left rail: pill active state with edge indicator */
 .oa-rail {

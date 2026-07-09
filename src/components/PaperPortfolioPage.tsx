@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type React from 'react'
-import { Briefcase, GraduationCap, Inbox, LineChart, RefreshCw, RotateCcw, X } from 'lucide-react'
+import { Briefcase, GraduationCap, Inbox, LineChart, Moon, RefreshCw, RotateCcw, Sun, X } from 'lucide-react'
 import { closePaperPosition, getPaperAccountWithMarketPrices, resetPaperAccount } from '../core/paperTradeApi'
 import type { PaperAccountResponse, PaperPositionRow } from '../core/paperTradeApi'
 import type { PaperPosition } from '../types/paperTradeTypes'
@@ -361,7 +361,7 @@ function ResetModal({ onConfirm, onCancel }: { onConfirm: (cash: number) => void
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-export function PaperPortfolioPage() {
+export function PaperPortfolioPage({ theme, onToggleTheme }: { theme: 'light' | 'dark'; onToggleTheme: () => void }) {
   const { t } = useT()
   const p = t.paper
   const [data, setData] = useState<PaperAccountResponse | null>(null)
@@ -394,6 +394,9 @@ export function PaperPortfolioPage() {
         <button className="oa-brand oa-brand-button" type="button" onClick={() => navigate('#/')} aria-label="Qveris home"><strong>Qveris</strong><span>AI</span></button>
         <h2 className="pp-page-title">{p.title}</h2>
         <div className="oa-top-spacer" />
+        <button className="theme-toggle" type="button" onClick={onToggleTheme} aria-label="Toggle dark mode">
+          {theme === 'dark' ? <Moon size={16} /> : <Sun size={16} />}
+        </button>
         <button className="pp-refresh-btn" type="button" onClick={load} disabled={loading}>
           <RefreshCw size={14} className={loading ? 'pp-spin' : ''} />
         </button>

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
-import { GraduationCap, Briefcase, CandlestickChart, Search, Sparkles } from 'lucide-react'
+import { GraduationCap, Briefcase, CandlestickChart, Moon, Search, Sparkles, Sun } from 'lucide-react'
 import { getPaperAccount } from '../core/paperTradeApi'
 import { isSupportedUnderlying } from '../core/supportedUnderlyings'
 import { useT } from '../i18n'
@@ -72,7 +72,7 @@ function HeroVisual() {
   )
 }
 
-export function HomePage() {
+export function HomePage({ theme, onToggleTheme }: { theme: 'light' | 'dark'; onToggleTheme: () => void }) {
   const { t, lang, setLang } = useT()
   const h = t.home
   const [ticker, setTicker] = useState('')
@@ -125,6 +125,9 @@ export function HomePage() {
       <header className="home-topbar">
         <button className="oa-brand oa-brand-button" type="button" onClick={() => navigate('#/')} aria-label="Qveris home"><strong>Qveris</strong><span>AI</span></button>
         <div className="oa-top-spacer" />
+        <button className="theme-toggle" type="button" onClick={onToggleTheme} aria-label="Toggle dark mode">
+          {theme === 'dark' ? <Moon size={16} /> : <Sun size={16} />}
+        </button>
         <div className="lang-toggle">
           <button className={lang === 'en' ? 'active' : ''} type="button" onClick={() => setLang('en')}>EN</button>
           <button className={lang === 'zh' ? 'active' : ''} type="button" onClick={() => setLang('zh')}>中</button>

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Briefcase, GraduationCap, LineChart, Search } from 'lucide-react'
+import { Briefcase, GraduationCap, LineChart, Moon, Search, Sun } from 'lucide-react'
 import {
   educationCategories,
   strategyEducationContent,
@@ -200,7 +200,7 @@ function DetailPanel({ item }: { item: StrategyEducationItem }) {
   )
 }
 
-export function StrategyEducationPage() {
+export function StrategyEducationPage({ theme, onToggleTheme }: { theme: 'light' | 'dark'; onToggleTheme: () => void }) {
   const { t, lang, setLang } = useT()
   const l = t.learn
   const [category, setCategory] = useState<EducationCategory | 'all'>('all')
@@ -230,6 +230,9 @@ export function StrategyEducationPage() {
         <button className="oa-brand oa-brand-button" type="button" onClick={() => navigate('#/')} aria-label="Qveris home"><strong>Qveris</strong><span>AI</span></button>
         <h2 className="pp-page-title">{l.title}</h2>
         <div className="oa-top-spacer" />
+        <button className="theme-toggle" type="button" onClick={onToggleTheme} aria-label="Toggle dark mode">
+          {theme === 'dark' ? <Moon size={16} /> : <Sun size={16} />}
+        </button>
         <div className="lang-toggle">
           <button className={lang === 'en' ? 'active' : ''} type="button" onClick={() => setLang('en')}>EN</button>
           <button className={lang === 'zh' ? 'active' : ''} type="button" onClick={() => setLang('zh')}>中</button>

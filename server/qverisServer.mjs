@@ -39,9 +39,11 @@ const corsOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:5173'
 const serveStatic = process.env.SERVE_STATIC !== 'false'
 const refreshMs = Number(process.env.QVERIS_REFRESH_MS || 120000)
 const closedCacheMs = Number(process.env.QVERIS_CLOSED_CACHE_MS || 6 * 60 * 60 * 1000)
+const openInterestCacheMs = Number(process.env.QVERIS_OPEN_INTEREST_CACHE_MS || 6 * 60 * 60 * 1000)
 const heavyLimit = Number(process.env.QVERIS_HEAVY_CONCURRENCY || 4)
 const marketCache = new Map()
 const optionsCache = new Map()
+const openInterestCache = new Map()
 const qverisInflight = new Map()
 const cacheDir = new URL('../.cache/qveris/', import.meta.url)
 const staticRoot = fileURLToPath(new URL('../dist/', import.meta.url))
@@ -59,6 +61,7 @@ const tools = {
   thetaQuote: 'theta_data.option.snapshot.quote.retrieve.v3.66abf829',
   thetaMarketValue: 'theta_data.option.snapshot.marketvalue.retrieve.v3.293b6b16',
   thetaGreeks: 'theta_data.option.snapshot.greeks.firstorder.retrieve.v3.e74251d1',
+  thetaOpenInterest: 'theta_data.option.snapshot.openinterest.retrieve.v3.46f70809',
   earnings: 'finnhub.calendar.earnings.retrieve.v1',
   filings: 'finnhub.stock.filings.retrieve.v1',
   volatility: 'flashalpha_historical.surface.retrieve.v1.a7f0f499',
@@ -223,8 +226,8 @@ function cached(cache, bucket, key) {
   }
 }
 
-function cacheSet(cache, bucket, key, body) {
-  const entry = { body, expires: Date.now() + (isUsRegularMarketOpen() ? refreshMs : closedCacheMs) }
+function cacheSet(cache, bucket, key, body, ttlMs) {
+  const entry = { body, expires: Date.now() + (ttlMs ?? (isUsRegularMarketOpen() ? refreshMs : closedCacheMs)) }
   cache.set(key, entry)
   try {
     mkdirSync(cacheDir, { recursive: true })
@@ -628,7 +631,15 @@ function normalizeOptions(ticker, result, spot) {
 
 function columnRows(result) {
   const data = parseMaybeTruncated(result)
-  if (!data || Array.isArray(data)) return Array.isArray(data) ? data : []
+  if (!data) return []
+  if (Array.isArray(data)) return data
+  if (Array.isArray(data.response)) {
+    return data.response.flatMap((item) => {
+      const contract = item?.contract && typeof item.contract === 'object' ? item.contract : {}
+      const rows = Array.isArray(item?.data) ? item.data : []
+      return rows.map((row) => ({ ...contract, ...row }))
+    })
+  }
   const keys = Object.keys(data).filter((key) => Array.isArray(data[key]))
   const length = Math.max(0, ...keys.map((key) => data[key].length))
   return Array.from({ length }, (_, index) => Object.fromEntries(keys.map((key) => [key, data[key][index]])))
@@ -639,10 +650,28 @@ function optionKey(row) {
   return [row.symbol, row.expiration, Number(row.strike), right].join('|')
 }
 
-function normalizeThetaOptions(ticker, quoteResult, marketValueResult, greeksResult, spot) {
+async function getThetaOpenInterest(ticker) {
+  const cacheKey = `${ticker}:snapshot`
+  const cachedBody = cached(openInterestCache, 'theta-open-interest', cacheKey)
+  if (cachedBody) return cachedBody
+  const result = await qverisHeavyExecute(tools.thetaOpenInterest, {
+    symbol: ticker,
+    expiration: '*',
+    strike: '*',
+    right: 'both',
+    max_dte: 220,
+    strike_range: 25,
+    format: 'json',
+  }, 100000)
+  const rows = columnRows(await parseToolContent(result))
+  if (rows.length) return cacheSet(openInterestCache, 'theta-open-interest', cacheKey, rows, openInterestCacheMs)
+  return rows
+}
+
+function normalizeThetaOptions(ticker, quoteResult, marketValueResult, greeksResult, openInterestResult, spot) {
   const byKey = new Map()
   for (const row of columnRows(quoteResult)) byKey.set(optionKey(row), { ...row })
-  for (const source of [marketValueResult, greeksResult]) {
+  for (const source of [marketValueResult, greeksResult, openInterestResult]) {
     for (const row of columnRows(source)) {
       const key = optionKey(row)
       byKey.set(key, { ...(byKey.get(key) ?? {}), ...row })
@@ -660,7 +689,9 @@ function normalizeThetaOptions(ticker, quoteResult, marketValueResult, greeksRes
     bid_size: row.bid_size,
     ask_size: row.ask_size,
     iv: row.implied_vol,
+    open_interest: row.open_interest ?? row.openInterest ?? row.oi,
     delta: row.delta,
+    gamma: row.gamma,
     theta: row.theta,
     vega: row.vega,
   }))
@@ -968,12 +999,13 @@ async function handle(req, res) {
       const cachedBody = cached(optionsCache, 'options', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)
       try {
-        const [liveQuoteResult, raw, thetaQuote, thetaMarketValue, thetaGreeks] = await Promise.allSettled([
+        const [liveQuoteResult, raw, thetaQuote, thetaMarketValue, thetaGreeks, thetaOpenInterest] = await Promise.allSettled([
           qverisExecute(tools.liveQuote, { s: `${ticker}.US`, fmt: 'json' }),
           useTheta ? Promise.resolve(null) : qverisHeavyExecute(tools.options, { symbol: ticker, market: 'US' }, 24000),
           useTheta ? qverisHeavyExecute(tools.thetaQuote, { symbol: ticker, expiration: '*', strike: '*', right: 'both', max_dte: 220, strike_range: 25, format: 'json' }, 100000) : Promise.resolve(null),
           useTheta ? qverisHeavyExecute(tools.thetaMarketValue, { symbol: ticker, expiration: '*', strike: '*', right: 'both', max_dte: 220, strike_range: 25, format: 'json' }, 100000) : Promise.resolve(null),
           useTheta ? qverisHeavyExecute(tools.thetaGreeks, { symbol: ticker, expiration: '*', strike: '*', right: 'both', max_dte: 220, strike_range: 25, format: 'json' }, 100000) : Promise.resolve(null),
+          useTheta ? getThetaOpenInterest(ticker) : Promise.resolve(null),
         ])
         const liveQuote = liveQuoteResult.status === 'fulfilled' ? normalizeLiveQuote(ticker, liveQuoteResult.value) : null
         const quoteSpot = liveQuote?.price ?? null
@@ -985,6 +1017,7 @@ async function handle(req, res) {
             await parseToolContent(thetaQuote.value),
             await parseToolContent(thetaMarketValue.value),
             await parseToolContent(thetaGreeks.value),
+            thetaOpenInterest.status === 'fulfilled' ? thetaOpenInterest.value : [],
             quoteSpot,
           )
           source = 'theta_snapshot'
@@ -1009,6 +1042,12 @@ async function handle(req, res) {
           ? ['QVERIS_DATA_GAP: underlying spot unavailable; options chain is not used for contract-level recommendations.']
           : []
         if (liveQuoteResult.status === 'rejected') spotGaps.push(`QVERIS_DATA_GAP: delayed stock quote unavailable (${liveQuoteResult.reason?.message ?? 'unknown error'}).`)
+        const hasOpenInterest = contracts.some((contract) => typeof contract.openInterest === 'number')
+        if (source === 'theta_snapshot' && thetaOpenInterest.status === 'rejected') {
+          spotGaps.push(`QVERIS_DATA_GAP: open interest unavailable (${thetaOpenInterest.reason?.message ?? 'unknown error'}).`)
+        } else if (source === 'theta_snapshot' && !hasOpenInterest) {
+          spotGaps.push('QVERIS_DATA_GAP: open interest unavailable in the current Theta snapshot; OI is an OPRA daily field, not an intraday stream.')
+        }
         return json(res, 200, cacheSet(optionsCache, 'options', cacheKey, {
           ticker,
           status,
@@ -1017,6 +1056,7 @@ async function handle(req, res) {
           contracts,
           market: liveQuote ?? undefined,
           asOf: new Date().toISOString(),
+          openInterestCadence: source === 'theta_snapshot' ? 'OPRA reports option open interest around 06:30 ET for the previous trading day.' : undefined,
           message: contracts.length
             ? status === 'available'
               ? `${source === 'theta_snapshot' ? 'Theta snapshot' : 'QVeris US options chain'} normalized.`

@@ -32,12 +32,12 @@
 }
 
 :root[data-theme='dark'] {
-  --bg: #0b111a;
-  --surface: #101824;
-  --surface-2: #172233;
-  --text: #e7eef8;
-  --muted: #8fa2bb;
-  --border: #253449;
+  --bg: #182230;
+  --surface: #202b3a;
+  --surface-2: #273648;
+  --text: #eef4fb;
+  --muted: #a7b6c9;
+  --border: #3a4a5f;
   --accent: #19a463;
   --accent-soft: rgba(25, 164, 99, 0.14);
   --accent-mid: rgba(25, 164, 99, 0.28);

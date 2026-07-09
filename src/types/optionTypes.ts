@@ -52,6 +52,7 @@ export interface QverisOptionsResponse {
   ticker: string
   status: DataStatus
   mode?: 'live'
+  dataSource?: string
   contracts: QverisOptionContract[]
   market?: QverisMarketSnapshot
   dataGaps: string[]

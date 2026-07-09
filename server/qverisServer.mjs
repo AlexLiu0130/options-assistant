@@ -51,10 +51,14 @@ const heavyQueue = []
 // QVeris tool IDs. These are executed only through the QVeris gateway, never by direct vendor API calls.
 const tools = {
   quote: 'finnhub_io_api.stock.quote',
+  liveQuote: 'eodhd.live_v2.us_quote_delayed.retrieve.v1.f0e13d45',
   ohlcv: 'eodhd.live_data.real_time.retrieve.v1.b60a4285',
   intraday: 'alphavantage.time-series.intraday.v1',
   dailyAdjusted: 'alphavantage.time-series.daily-adjusted.v1',
   options: 'qveris_finance.opt_chain',
+  thetaQuote: 'theta_data.option.snapshot.quote.retrieve.v3.66abf829',
+  thetaMarketValue: 'theta_data.option.snapshot.marketvalue.retrieve.v3.293b6b16',
+  thetaGreeks: 'theta_data.option.snapshot.greeks.firstorder.retrieve.v3.e74251d1',
   earnings: 'finnhub.calendar.earnings.retrieve.v1',
   filings: 'finnhub.stock.filings.retrieve.v1',
   volatility: 'flashalpha_historical.surface.retrieve.v1.a7f0f499',
@@ -416,6 +420,66 @@ function normalizeQuote(ticker, quoteResult, ohlcvResult) {
   }
 }
 
+function normalizeLiveQuote(ticker, result) {
+  const data = result?.data?.[`${ticker}.US`] ?? result?.data?.[ticker] ?? result?.[`${ticker}.US`] ?? result?.[ticker] ?? result?.data ?? result
+  const lastTradeMs = toNumber(data?.lastTradeTime ?? data?.timestamp)
+  const timestamp = lastTradeMs && lastTradeMs > 1e12 ? Math.floor(lastTradeMs / 1000) : lastTradeMs
+  const price = toNumber(data?.lastTradePrice ?? data?.price ?? data?.close ?? data?.ethPrice)
+  const previousClose = toNumber(data?.previousClosePrice ?? data?.previousClose)
+  const change = toNumber(data?.change) ?? (price !== null && previousClose !== null ? price - previousClose : null)
+  return {
+    ticker,
+    price,
+    open: toNumber(data?.open),
+    high: toNumber(data?.high),
+    low: toNumber(data?.low),
+    previousClose,
+    change,
+    changePercent: toNumber(data?.changePercent),
+    volume: toNumber(data?.volume ?? data?.size),
+    timestamp: timestamp ?? 0,
+    asOf: timestamp ? new Date(timestamp * 1000).toISOString() : new Date().toISOString(),
+    source: 'QVeris',
+    marketDataType: 'delayed_quote',
+    candles: [],
+  }
+}
+
+function mergeLiveQuoteCandle(candles, quote, kind) {
+  if (!quote?.price || !quote.timestamp) return candles
+  const copy = [...candles]
+  const liveDate = new Date(quote.timestamp * 1000).toISOString().slice(0, 10)
+  const last = copy.at(-1)
+  const lastDate = typeof last?.time === 'number'
+    ? new Date(last.time * 1000).toISOString().slice(0, 10)
+    : String(last?.time ?? '').slice(0, 10)
+  const liveTime = kind === 'daily' ? liveDate : quote.timestamp
+  const fullDayCandle = {
+    time: liveTime,
+    open: quote.open ?? quote.price,
+    high: quote.high ?? quote.price,
+    low: quote.low ?? quote.price,
+    close: quote.price,
+    volume: quote.volume,
+  }
+  if (kind === 'daily') {
+    if (lastDate === liveDate) copy[copy.length - 1] = { ...last, ...fullDayCandle }
+    else copy.push(fullDayCandle)
+    return copy
+  }
+  const intervalCandle = {
+    time: liveTime,
+    open: lastDate === liveDate ? (last?.open ?? quote.price) : (last?.close ?? quote.open ?? quote.price),
+    high: Math.max(lastDate === liveDate ? (last?.high ?? quote.price) : (quote.open ?? quote.price), quote.price),
+    low: Math.min(lastDate === liveDate ? (last?.low ?? quote.price) : (quote.open ?? quote.price), quote.price),
+    close: quote.price,
+    volume: lastDate === liveDate ? (last?.volume ?? null) : null,
+  }
+  if (lastDate === liveDate) copy[copy.length - 1] = { ...last, ...intervalCandle }
+  else copy.push(intervalCandle)
+  return copy
+}
+
 async function normalizeDailyCandles(result, limit) {
   const parsed = await parseToolContent(result)
   const series = parsed?.['Time Series (Daily)'] ?? {}
@@ -560,6 +624,47 @@ function normalizeOptions(ticker, result, spot) {
     pruned.push(...contracts.filter((contract) => keep.has(contract.strike)))
   }
   return { contracts: pruned.slice(0, 600), effectiveSpot }
+}
+
+function columnRows(result) {
+  const data = parseMaybeTruncated(result)
+  if (!data || Array.isArray(data)) return Array.isArray(data) ? data : []
+  const keys = Object.keys(data).filter((key) => Array.isArray(data[key]))
+  const length = Math.max(0, ...keys.map((key) => data[key].length))
+  return Array.from({ length }, (_, index) => Object.fromEntries(keys.map((key) => [key, data[key][index]])))
+}
+
+function optionKey(row) {
+  const right = String(row.right ?? '').toLowerCase()
+  return [row.symbol, row.expiration, Number(row.strike), right].join('|')
+}
+
+function normalizeThetaOptions(ticker, quoteResult, marketValueResult, greeksResult, spot) {
+  const byKey = new Map()
+  for (const row of columnRows(quoteResult)) byKey.set(optionKey(row), { ...row })
+  for (const source of [marketValueResult, greeksResult]) {
+    for (const row of columnRows(source)) {
+      const key = optionKey(row)
+      byKey.set(key, { ...(byKey.get(key) ?? {}), ...row })
+    }
+  }
+  const rows = [...byKey.values()].map((row) => ({
+    date: String(row.timestamp ?? ''),
+    name: `${ticker} ${row.expiration} ${row.right} ${row.strike}`,
+    option_type: String(row.right ?? '').toLowerCase(),
+    expiry: String(row.expiration ?? ''),
+    strike: row.strike,
+    bid: row.bid ?? row.market_bid,
+    ask: row.ask ?? row.market_ask,
+    price: row.market_price,
+    bid_size: row.bid_size,
+    ask_size: row.ask_size,
+    iv: row.implied_vol,
+    delta: row.delta,
+    theta: row.theta,
+    vega: row.vega,
+  }))
+  return normalizeOptions(ticker, rows, spot)
 }
 
 function estimateSpotFromOptions(contracts) {
@@ -795,11 +900,12 @@ async function handle(req, res) {
       if (!ticker) throw safeError('Ticker is required.', 400)
       requireSupportedTicker(ticker)
       const range = url.searchParams.get('range') || '1h'
-      const cacheKey = `${ticker}:${range}`
+      const cacheKey = `${ticker}:${range}:${isUsRegularMarketOpen() ? 'open' : 'closed'}`
       const cachedBody = cached(marketCache, 'market', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)
       const rangeParams = marketRangeParams(range)
-      const [ohlcvResult, historyResult] = await Promise.allSettled([
+      const [liveQuoteResult, ohlcvResult, historyResult] = await Promise.allSettled([
+        qverisExecute(tools.liveQuote, { s: `${ticker}.US`, fmt: 'json' }),
         qverisExecute(tools.ohlcv, {
           symbol: `${ticker}.US`,
           fmt: 'json',
@@ -825,9 +931,12 @@ async function handle(req, res) {
           }, rangeParams.outputsize === 'full' ? 50000 : 60000),
       ])
       const dataGaps = []
+      const liveQuote = liveQuoteResult.status === 'fulfilled' ? normalizeLiveQuote(ticker, liveQuoteResult.value) : null
       const ohlcv = ohlcvResult.status === 'fulfilled' ? ohlcvResult.value : {}
+      if (liveQuoteResult.status === 'rejected') dataGaps.push(`QVERIS_MARKET_GAP: delayed quote snapshot unavailable (${liveQuoteResult.reason.message}).`)
       if (ohlcvResult.status === 'rejected') dataGaps.push(`QVERIS_MARKET_GAP: realtime OHLC unavailable (${ohlcvResult.reason.message}).`)
-      const snapshot = normalizeQuote(ticker, {}, ohlcv)
+      const fallbackSnapshot = normalizeQuote(ticker, {}, ohlcv)
+      const snapshot = liveQuote?.price ? { ...fallbackSnapshot, ...liveQuote } : fallbackSnapshot
       const rawCandles = historyResult.status === 'fulfilled'
         ? rangeParams.kind === 'intraday'
           ? await normalizeIntradayCandles(historyResult.value, rangeParams.tradingDays)
@@ -835,7 +944,7 @@ async function handle(req, res) {
         : []
       if (historyResult.status === 'rejected') dataGaps.push(`QVERIS_MARKET_GAP: historical candles unavailable (${historyResult.reason.message}).`)
       const candles = rangeParams.weekly ? weeklyCandles(rawCandles) : aggregateCandles(rawCandles, rangeParams.aggregate)
-      const finalCandles = candles.length ? candles : snapshot.candles
+      const finalCandles = mergeLiveQuoteCandle(candles.length ? candles : snapshot.candles, snapshot, rangeParams.kind)
       const lastCandle = finalCandles?.at(-1)
       return json(res, 200, cacheSet(marketCache, 'market', cacheKey, {
         ...snapshot,
@@ -846,7 +955,7 @@ async function handle(req, res) {
         volume: snapshot.volume ?? lastCandle?.volume ?? null,
         candles: finalCandles,
         dataGaps,
-        message: dataGaps.length ? 'QVeris market data loaded with partial fallback.' : 'QVeris market data loaded.',
+        message: dataGaps.length ? 'QVeris market data loaded with partial fallback.' : 'QVeris delayed quote and chart data loaded.',
       }))
     }
 
@@ -854,39 +963,68 @@ async function handle(req, res) {
       const ticker = tickerFromPath(url.pathname, '/api/options/')
       if (!ticker) throw safeError('Ticker is required.', 400)
       requireSupportedTicker(ticker)
-      const cachedBody = cached(optionsCache, 'options', ticker)
+      const useTheta = url.searchParams.get('live') === '1' || isUsRegularMarketOpen()
+      const cacheKey = `${ticker}:${useTheta ? 'open' : 'closed'}`
+      const cachedBody = cached(optionsCache, 'options', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)
       try {
-        const [raw, ohlcvResult] = await Promise.allSettled([
-          qverisHeavyExecute(tools.options, { symbol: ticker, market: 'US' }, 24000),
-          qverisExecute(tools.ohlcv, { symbol: `${ticker}.US`, fmt: 'json' }),
+        const [liveQuoteResult, raw, thetaQuote, thetaMarketValue, thetaGreeks] = await Promise.allSettled([
+          qverisExecute(tools.liveQuote, { s: `${ticker}.US`, fmt: 'json' }),
+          useTheta ? Promise.resolve(null) : qverisHeavyExecute(tools.options, { symbol: ticker, market: 'US' }, 24000),
+          useTheta ? qverisHeavyExecute(tools.thetaQuote, { symbol: ticker, expiration: '*', strike: '*', right: 'both', max_dte: 220, strike_range: 25, format: 'json' }, 100000) : Promise.resolve(null),
+          useTheta ? qverisHeavyExecute(tools.thetaMarketValue, { symbol: ticker, expiration: '*', strike: '*', right: 'both', max_dte: 220, strike_range: 25, format: 'json' }, 100000) : Promise.resolve(null),
+          useTheta ? qverisHeavyExecute(tools.thetaGreeks, { symbol: ticker, expiration: '*', strike: '*', right: 'both', max_dte: 220, strike_range: 25, format: 'json' }, 100000) : Promise.resolve(null),
         ])
-        if (raw.status === 'rejected') throw raw.reason
-        const result = await parseToolContent(raw.value)
-        const ohlcv = ohlcvResult.status === 'fulfilled' ? ohlcvResult.value : {}
-        const quoteSpot = toNumber(ohlcv.close)
-        const { contracts, effectiveSpot } = normalizeOptions(ticker, result, quoteSpot)
+        const liveQuote = liveQuoteResult.status === 'fulfilled' ? normalizeLiveQuote(ticker, liveQuoteResult.value) : null
+        const quoteSpot = liveQuote?.price ?? null
+        let source = 'qveris_finance'
+        let normalized
+        if (useTheta && thetaQuote.status === 'fulfilled' && thetaMarketValue.status === 'fulfilled' && thetaGreeks.status === 'fulfilled') {
+          normalized = normalizeThetaOptions(
+            ticker,
+            await parseToolContent(thetaQuote.value),
+            await parseToolContent(thetaMarketValue.value),
+            await parseToolContent(thetaGreeks.value),
+            quoteSpot,
+          )
+          source = 'theta_snapshot'
+        } else if (useTheta) {
+          const fallback = await qverisHeavyExecute(tools.options, { symbol: ticker, market: 'US' }, 24000)
+          normalized = normalizeOptions(ticker, await parseToolContent(fallback), quoteSpot)
+          source = 'qveris_finance_fallback'
+        } else {
+          if (raw.status === 'rejected' || !raw.value) throw raw.reason ?? safeError('QVeris options fallback was not loaded.')
+          normalized = normalizeOptions(ticker, await parseToolContent(raw.value), quoteSpot)
+        }
+        if (useTheta && (!normalized?.contracts?.length)) {
+          const fallback = await qverisHeavyExecute(tools.options, { symbol: ticker, market: 'US' }, 24000)
+          normalized = normalizeOptions(ticker, await parseToolContent(fallback), quoteSpot)
+          source = 'qveris_finance_fallback'
+        }
+        const { contracts, effectiveSpot } = normalized
         const status = contracts.length
           ? effectiveSpot === null ? 'partial' : 'available'
           : 'unavailable'
         const spotGaps = effectiveSpot === null
           ? ['QVERIS_DATA_GAP: underlying spot unavailable; options chain is not used for contract-level recommendations.']
           : []
-        if (ohlcvResult.status === 'rejected') spotGaps.push(`QVERIS_DATA_GAP: spot quote unavailable (${ohlcvResult.reason?.message ?? 'unknown error'}).`)
-        return json(res, 200, cacheSet(optionsCache, 'options', ticker, {
+        if (liveQuoteResult.status === 'rejected') spotGaps.push(`QVERIS_DATA_GAP: delayed stock quote unavailable (${liveQuoteResult.reason?.message ?? 'unknown error'}).`)
+        return json(res, 200, cacheSet(optionsCache, 'options', cacheKey, {
           ticker,
           status,
           mode: 'live',
+          dataSource: source,
           contracts,
+          market: liveQuote ?? undefined,
           asOf: new Date().toISOString(),
           message: contracts.length
             ? status === 'available'
-              ? 'QVeris US options chain normalized.'
+              ? `${source === 'theta_snapshot' ? 'Theta snapshot' : 'QVeris US options chain'} normalized.`
               : 'QVeris US options chain loaded without a reliable spot reference.'
             : 'QVeris returned no normalized US option contracts.',
           dataGaps: [
             ...spotGaps,
-            'QVERIS_DATA_GAP: theta/gamma/vega may be absent when the routed provider does not return them.',
+            ...(source === 'theta_snapshot' ? ['QVERIS_DATA_GAP: stock quote snapshot may be exchange-delayed; gamma is not included in this pass.'] : ['QVERIS_DATA_GAP: theta/gamma/vega may be absent when the routed provider does not return them.']),
             'QVERIS_DATA_GAP: option reference master unavailable; US equity multiplier 100 remains an assumption.',
           ],
         }))

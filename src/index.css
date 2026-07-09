@@ -40,8 +40,15 @@
 body {
   margin: 0;
   min-width: 320px;
+  min-height: 100%;
   background: var(--bg);
   font-variant-numeric: tabular-nums;
+}
+
+html,
+#root {
+  min-height: 100%;
+  width: 100%;
 }
 
 h1,

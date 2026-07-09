@@ -3784,6 +3784,21 @@
 :root[data-theme='dark'] .assistant-input input {
   background: var(--surface) !important;
 }
+:root[data-theme='dark'] .candidate-list[data-view="bullish"] .tile-head {
+  background: linear-gradient(90deg, rgba(25, 164, 99, 0.20), rgba(32, 43, 58, 0.96)) !important;
+}
+:root[data-theme='dark'] .candidate-list[data-view="bearish"] .tile-head {
+  background: linear-gradient(90deg, rgba(251, 113, 133, 0.18), rgba(32, 43, 58, 0.96)) !important;
+}
+:root[data-theme='dark'] .candidate-list[data-view="neutral"] .tile-head {
+  background: linear-gradient(90deg, rgba(251, 191, 36, 0.16), rgba(32, 43, 58, 0.96)) !important;
+}
+:root[data-theme='dark'] .candidate-list[data-view="volatile"] .tile-head {
+  background: linear-gradient(90deg, rgba(168, 85, 247, 0.18), rgba(32, 43, 58, 0.96)) !important;
+}
+:root[data-theme='dark'] .candidate-list[data-view="all"] .tile-head {
+  background: linear-gradient(90deg, rgba(143, 162, 187, 0.16), rgba(32, 43, 58, 0.96)) !important;
+}
 :root[data-theme='dark'] .chain-matrix tbody tr:hover td,
 :root[data-theme='dark'] .pp-table tbody tr:hover,
 :root[data-theme='dark'] .edu-list-item:hover,

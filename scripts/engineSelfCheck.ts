@@ -233,6 +233,9 @@ assert.deepEqual(
     'put-diagonal-spread',
   ],
 )
+const volatileStrangle = recommendStrategyTypes(viewFor('volatile'), optionsFixture, chainExpiration, { rank: false }).find((item) => item.id === 'long-strangle')
+assert.ok(volatileStrangle?.legs.some((item) => item.right === 'call' && item.strike > view.current_price))
+assert.ok(volatileStrangle?.legs.some((item) => item.right === 'put' && item.strike < view.current_price))
 
 const budgetRanked = recommendStrategyTypes({ ...viewFor('bullish'), risk_budget: 250 }, optionsFixture, chainExpiration)
 assert.equal(budgetRanked[0].id, 'bull-call-spread')

@@ -12,6 +12,10 @@ const sellDte: [number, number] = [30, 45]
 const eventDte: [number, number] = [14, 45]
 const leapsDte: [number, number] = [180, 365]
 
+function longPremiumDte(options: QverisOptionsResponse): [number, number] {
+  return (chainIv(options) ?? 0.35) <= 0.25 ? [45, 60] : buyDte
+}
+
 function mid(contract: QverisOptionContract) {
   if (
     typeof contract.bid === 'number' &&
@@ -158,6 +162,21 @@ function byAbsDelta(
   return nearest(matches.length ? matches : contracts, fallbackTarget)
 }
 
+function byAbsDeltaOtm(
+  contracts: QverisOptionContract[],
+  min: number,
+  max: number,
+  spot: number,
+  fallbackTarget: number,
+) {
+  const otm = contracts.filter((contract) =>
+    contract.right === 'call'
+      ? (contract.strike ?? 0) > spot
+      : (contract.strike ?? 0) < spot,
+  )
+  return byAbsDelta(otm.length ? otm : contracts, min, max, fallbackTarget)
+}
+
 function deltaDistance(contract: QverisOptionContract, target: number) {
   return Math.abs(Math.abs(contract.delta ?? target) - target)
 }
@@ -172,7 +191,7 @@ function bestLongOption(
   view: ParsedView,
   fallbackTarget: number,
 ) {
-  const [min, max, target] = view.strength === 'strong' ? [0.4, 0.55, 0.45] : [0.5, 0.65, 0.55]
+  const [min, max, target] = view.experience_level === 'beginner' ? [0.55, 0.7, 0.6] : [0.45, 0.65, 0.55]
   const matches = contracts.filter((contract) => {
     const absDelta = Math.abs(contract.delta ?? 0)
     return absDelta >= min && absDelta <= max
@@ -209,7 +228,7 @@ function callDebitPair(calls: QverisOptionContract[], target: number) {
 function bestCallDebitSpread(calls: QverisOptionContract[], view: ParsedView) {
   const buyCandidates = calls.filter((contract) => {
     const absDelta = Math.abs(contract.delta ?? 0)
-    return absDelta >= 0.45 && absDelta <= 0.65
+    return absDelta >= 0.5 && absDelta <= 0.65
   })
   const target = numericTarget(view)
   const pairs = (buyCandidates.length ? buyCandidates : calls).flatMap((buy) =>
@@ -226,6 +245,7 @@ function bestCallDebitSpread(calls: QverisOptionContract[], view: ParsedView) {
           score:
             Math.abs((sell.strike ?? 0) - target) +
             deltaDistance(buy, 0.55) * view.current_price +
+            deltaDistance(sell, 0.3) * view.current_price * 0.5 +
             lossBudgetPenalty(view, maxLoss),
         }
       }),
@@ -238,7 +258,7 @@ function bestCallDebitSpread(calls: QverisOptionContract[], view: ParsedView) {
 function bestPutDebitSpread(puts: QverisOptionContract[], view: ParsedView) {
   const buyCandidates = puts.filter((contract) => {
     const absDelta = Math.abs(contract.delta ?? 0)
-    return absDelta >= 0.45 && absDelta <= 0.65
+    return absDelta >= 0.5 && absDelta <= 0.65
   })
   const target = numericTarget(view)
   const pairs = (buyCandidates.length ? buyCandidates : puts).flatMap((buy) =>
@@ -255,6 +275,7 @@ function bestPutDebitSpread(puts: QverisOptionContract[], view: ParsedView) {
           score:
             Math.abs((sell.strike ?? 0) - target) +
             deltaDistance(buy, 0.55) * view.current_price +
+            deltaDistance(sell, 0.3) * view.current_price * 0.5 +
             lossBudgetPenalty(view, maxLoss),
         }
       }),
@@ -276,7 +297,9 @@ function bestCreditSpread(
   )
   const shortCandidates = shortable.filter((contract) => {
     const absDelta = Math.abs(contract.delta ?? 0)
-    return absDelta >= 0.16 && absDelta <= 0.25
+    return view.experience_level === 'beginner'
+      ? absDelta >= 0.1 && absDelta <= 0.25
+      : absDelta >= 0.2 && absDelta <= 0.35
   })
   const buildPairs = (shorts: QverisOptionContract[]) =>
     shorts.flatMap((shortLeg) =>
@@ -295,7 +318,7 @@ function bestCreditSpread(
             shortLeg,
             longLeg,
             score:
-              deltaDistance(shortLeg, 0.2) * view.current_price +
+              deltaDistance(shortLeg, view.experience_level === 'beginner' ? 0.18 : 0.25) * view.current_price +
               deltaDistance(longLeg, 0.05) * view.current_price +
               lossBudgetPenalty(view, maxLoss),
           }
@@ -694,6 +717,43 @@ function scoreStrategy(strategy: StrategyCandidate, view: ParsedView, options?: 
   }
 
   const greeks = greekExposure(strategy, options)
+  if (view.view === 'bullish') {
+    if (greeks.delta > 0.03) {
+      score += 8
+      detail('greeks', 'Positive delta matches a bullish view.', 'positive', Number(greeks.delta.toFixed(3)))
+    } else {
+      score -= 12
+      warnings.push('Net delta does not match the bullish view.')
+      detail('greeks', 'Net delta does not match the bullish view.', 'negative', Number(greeks.delta.toFixed(3)))
+    }
+  } else if (view.view === 'bearish') {
+    if (greeks.delta < -0.03) {
+      score += 8
+      detail('greeks', 'Negative delta matches a bearish view.', 'positive', Number(greeks.delta.toFixed(3)))
+    } else {
+      score -= 12
+      warnings.push('Net delta does not match the bearish view.')
+      detail('greeks', 'Net delta does not match the bearish view.', 'negative', Number(greeks.delta.toFixed(3)))
+    }
+  } else if (view.view === 'neutral') {
+    if (Math.abs(greeks.delta) <= 0.15) {
+      score += 8
+      detail('greeks', 'Low net delta matches a neutral view.', 'positive', Number(greeks.delta.toFixed(3)))
+    } else {
+      score -= 8
+      warnings.push('Net delta is directional for a neutral view.')
+      detail('greeks', 'Net delta is directional for a neutral view.', 'negative', Number(greeks.delta.toFixed(3)))
+    }
+  } else if (view.view === 'volatile') {
+    if (greeks.gamma > 0 || greeks.vega > 0) {
+      score += 8
+      detail('greeks', 'Positive gamma or vega matches a volatility view.', 'positive')
+    } else {
+      score -= 8
+      warnings.push('Greeks do not show clear long-volatility exposure.')
+      detail('greeks', 'Greeks do not show clear long-volatility exposure.', 'negative')
+    }
+  }
   if (greeks.vega > 0.05 && iv !== undefined && iv >= 0.45) {
     score -= 6
     warnings.push('Positive vega can suffer if elevated IV contracts.')
@@ -800,7 +860,7 @@ function longCall(
   options: QverisOptionsResponse,
   preferredExpiration?: string,
 ): StrategyCandidate | undefined {
-  const expiry = expiration(options, preferredExpiration, view.time_horizon.toLowerCase().includes('long') ? leapsDte : buyDte)
+  const expiry = expiration(options, preferredExpiration, view.time_horizon.toLowerCase().includes('long') ? leapsDte : longPremiumDte(options))
   if (!expiry) return undefined
   const buy = bestLongOption(contractsFor(options, 'call', expiry), view, view.current_price)
   if (!buy || !buy.strike) return undefined
@@ -872,7 +932,7 @@ function longPut(
   options: QverisOptionsResponse,
   preferredExpiration?: string,
 ): StrategyCandidate | undefined {
-  const expiry = expiration(options, preferredExpiration, view.time_horizon.toLowerCase().includes('long') ? leapsDte : buyDte)
+  const expiry = expiration(options, preferredExpiration, view.time_horizon.toLowerCase().includes('long') ? leapsDte : longPremiumDte(options))
   if (!expiry) return undefined
   const buy = bestLongOption(contractsFor(options, 'put', expiry), view, view.current_price)
   if (!buy || !buy.strike) return undefined
@@ -1051,8 +1111,8 @@ function longStrangle(
 ): StrategyCandidate | undefined {
   const expiry = expiration(options, preferredExpiration, eventDte)
   if (!expiry) return undefined
-  const call = byAbsDelta(contractsFor(options, 'call', expiry), 0.2, 0.35, view.current_price * 1.05)
-  const put = byAbsDelta(contractsFor(options, 'put', expiry), 0.2, 0.35, view.current_price * 0.95)
+  const call = byAbsDeltaOtm(contractsFor(options, 'call', expiry), 0.2, 0.35, view.current_price, view.current_price * 1.05)
+  const put = byAbsDeltaOtm(contractsFor(options, 'put', expiry), 0.2, 0.35, view.current_price, view.current_price * 0.95)
   if (!call?.strike || !put?.strike) return undefined
   const legs = [leg('buy', call), leg('buy', put)]
   const debit = Number(((legs[0].premium ?? 0) + (legs[1].premium ?? 0)).toFixed(2))
@@ -1230,8 +1290,8 @@ function shortStrangle(
 ): StrategyCandidate | undefined {
   const expiry = expiration(options, preferredExpiration, sellDte)
   if (!expiry) return undefined
-  const call = byAbsDelta(contractsFor(options, 'call', expiry), 0.2, 0.35, view.current_price * 1.05)
-  const put = byAbsDelta(contractsFor(options, 'put', expiry), 0.2, 0.35, view.current_price * 0.95)
+  const call = byAbsDeltaOtm(contractsFor(options, 'call', expiry), 0.2, 0.35, view.current_price, view.current_price * 1.05)
+  const put = byAbsDeltaOtm(contractsFor(options, 'put', expiry), 0.2, 0.35, view.current_price, view.current_price * 0.95)
   if (!call?.strike || !put?.strike) return undefined
   const legs = [leg('sell', call), leg('sell', put)]
   const credit = Number(((legs[0].premium ?? 0) + (legs[1].premium ?? 0)).toFixed(2))
@@ -1386,8 +1446,8 @@ function diagonalSpread(
   const frontContracts = contractsFor(options, right, front)
   const backContracts = contractsFor(options, right, back)
   const shortFront = right === 'call'
-    ? byAbsDelta(frontContracts, 0.2, 0.35, view.current_price * 1.04)
-    : byAbsDelta(frontContracts, 0.2, 0.35, view.current_price * 0.96)
+    ? byAbsDeltaOtm(frontContracts, 0.2, 0.35, view.current_price, view.current_price * 1.04)
+    : byAbsDeltaOtm(frontContracts, 0.2, 0.35, view.current_price, view.current_price * 0.96)
   const longBack = nearest(backContracts, view.current_price)
   if (!shortFront?.strike || !longBack?.strike) return undefined
   const legs = [leg('sell', shortFront), leg('buy', longBack)]

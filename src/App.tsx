@@ -85,22 +85,26 @@ const initialForm: FormState = {
   experience_level: 'beginner',
 }
 
-async function fetchJson<T>(path: string): Promise<T> {
+async function fetchJson<T>(path: string, options: { force?: boolean; persist?: boolean } = {}): Promise<T> {
   const hit = fetchCache.get(path)
-  if (hit && hit.expires > Date.now()) return hit.data as T
-  try {
-    const stored = JSON.parse(localStorage.getItem(`qveris:${path}`) || 'null')
-    if (stored?.expires > Date.now()) return stored.data as T
-  } catch {}
+  if (!options.force && hit && hit.expires > Date.now()) return hit.data as T
+  if (!options.force) {
+    try {
+      const stored = JSON.parse(localStorage.getItem(`qveris:${path}`) || 'null')
+      if (stored?.expires > Date.now()) return stored.data as T
+    } catch {}
+  }
   if (fetchInflight.has(path)) return fetchInflight.get(path) as Promise<T>
   const run = fetch(path)
     .then(async (response) => {
       const body = await response.json()
       if (!response.ok) throw new Error(body.error || `Request failed: ${path}`)
       fetchCache.set(path, { data: body, expires: Date.now() + fetchCacheMs })
-      try {
-        localStorage.setItem(`qveris:${path}`, JSON.stringify({ data: body, expires: Date.now() + fetchCacheMs }))
-      } catch {}
+      if (options.persist) {
+        try {
+          localStorage.setItem(`qveris:${path}`, JSON.stringify({ data: body, expires: Date.now() + fetchCacheMs }))
+        } catch {}
+      }
       return body as T
     })
     .finally(() => fetchInflight.delete(path))
@@ -228,7 +232,7 @@ function TradingPage({ initialTicker }: { initialTicker: string }) {
   useEffect(() => {
     if (!ticker || unsupportedTicker) { setMarket({}); return }
     let cancelled = false
-    const load = () => fetchJson<QverisMarketSnapshot>(`/api/market/${ticker}?range=${priceRange}`)
+    const load = () => fetchJson<QverisMarketSnapshot>(`/api/market/${ticker}?range=${priceRange}`, { force: true })
       .then((data) => { if (!cancelled) setMarket({ data }) })
       .catch((error: Error) => { if (!cancelled) setMarket({ error: error.message }) })
     setMarket({})
@@ -240,7 +244,7 @@ function TradingPage({ initialTicker }: { initialTicker: string }) {
   useEffect(() => {
     if (!ticker || unsupportedTicker) { setOptions({}); return }
     let cancelled = false
-    const load = () => fetchJson<QverisOptionsResponse>(`/api/options/${ticker}`)
+    const load = () => fetchJson<QverisOptionsResponse>(`/api/options/${ticker}`, { force: true })
       .then((data) => { if (!cancelled) setOptions({ data }) })
       .catch((error: Error) => { if (!cancelled) setOptions({ error: error.message }) })
     setOptions({})

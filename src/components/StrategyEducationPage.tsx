@@ -130,7 +130,7 @@ function DetailPanel({ item }: { item: StrategyEducationItem }) {
           <h4>{l.greeksSection}</h4>
           <p className="edu-greeks-note">{l.greeksSectionNote}</p>
           {item.sampleLegs.length > 0
-            ? <GreeksQuadChart strategy={candidate} underlyingPrice={spot} expandable={false} />
+            ? <GreeksQuadChart strategy={candidate} underlyingPrice={spot} expandable={false} teaching />
             : <p className="edu-greeks-empty">{l.greeksEmptyState}</p>}
         </section>
       </div>

@@ -136,6 +136,41 @@ function dataIssueMessages({ market, options }: { market: LoadState<QverisMarket
   ].filter(Boolean)
 }
 
+function DataStatusChips({
+  market,
+  options,
+  lang,
+}: {
+  market: LoadState<QverisMarketSnapshot>
+  options: LoadState<QverisOptionsResponse>
+  lang: 'en' | 'zh'
+}) {
+  const chips = [
+    market.data
+      ? (lang === 'zh' ? '行情已更新' : 'Market updated')
+      : market.error
+        ? (lang === 'zh' ? '行情失败' : 'Market failed')
+        : (lang === 'zh' ? '行情加载中' : 'Market loading'),
+    options.data?.status === 'available'
+      ? (lang === 'zh' ? '期权链可用' : 'Chain available')
+      : options.error
+        ? (lang === 'zh' ? '期权链失败' : 'Chain failed')
+        : (lang === 'zh' ? '期权链加载中' : 'Chain loading'),
+    options.data?.contracts.some((c) => typeof c.openInterest === 'number')
+      ? (lang === 'zh' ? 'OI 日更' : 'OI daily')
+      : '',
+    options.data?.contracts.some((c) => typeof c.delta === 'number')
+      ? (lang === 'zh' ? 'Greeks 链路' : 'Greeks in chain')
+      : (lang === 'zh' ? 'Greeks 模型' : 'Greeks model'),
+  ].filter(Boolean)
+
+  return (
+    <div className="data-status-chips" aria-label={lang === 'zh' ? '数据状态' : 'Data status'}>
+      {chips.map((chip) => <span key={chip}>{chip}</span>)}
+    </div>
+  )
+}
+
 const directionCardDefs: Array<{ value: Direction; key: 'bullish' | 'neutral' | 'bearish' | 'volatile'; icon: typeof ArrowUpRight }> = [
   { value: 'bullish', key: 'bullish', icon: ArrowUpRight },
   { value: 'neutral', key: 'neutral', icon: Waves },
@@ -477,6 +512,8 @@ function TradingPage({ initialTicker }: { initialTicker: string }) {
             <b className="loss">{formatMoney(referenceStrategy?.expectedMove?.low)}</b>
           </div>
 
+          <DataStatusChips market={market} options={options} lang={lang} />
+
           <section className="oa-chart-card">
             <UnderlyingPriceChart
               market={displayedMarket}
@@ -512,6 +549,9 @@ function TradingPage({ initialTicker }: { initialTicker: string }) {
             <OptionChainTable
               contracts={options.data?.contracts ?? []}
               expiration={chainExpiration}
+              isLoading={!options.data && !options.error}
+              error={options.error}
+              status={options.data?.status}
               selectedStrategy={selectedStrategy}
             />
           </section>

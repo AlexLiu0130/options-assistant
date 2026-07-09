@@ -157,6 +157,7 @@ export const zh: Translations = {
   greeks: {
     title: 'Greeks',
     modelBadge: '模型估算 · 待真实 Greeks',
+    teachingBadge: '教学形态 · 非实时 Greeks',
     showAll: '展开 Gamma & Vega',
     hideAll: '收起 Gamma & Vega',
     delta: 'Delta',
@@ -248,7 +249,7 @@ export const zh: Translations = {
     notSupportedNote: '教学展示，暂未接入自动构建器。',
     simplifiedNote: '简化示意，真实组合还包含正股或动态对冲管理。',
     greeksSection: 'Greeks 示意',
-    greeksSectionNote: '模型估算，用于理解风险暴露，不代表实时市场 Greeks。',
+    greeksSectionNote: '教学形态示意，重点看风险方向和集中区域，不代表实时市场数值。',
     greeksEmptyState: '该策略的 Greeks 需要真实持仓或动态对冲数据，当前仅展示文字解释。',
   },
 }

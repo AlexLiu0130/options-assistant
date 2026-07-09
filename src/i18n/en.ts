@@ -165,6 +165,7 @@ export const en = {
   greeks: {
     title: 'Greeks',
     modelBadge: 'Model estimate · Pending real Greeks',
+    teachingBadge: 'Teaching shape · not live Greeks',
     showAll: 'Show Gamma & Vega',
     hideAll: 'Hide Gamma & Vega',
     delta: 'Delta',
@@ -256,7 +257,7 @@ export const en = {
     notSupportedNote: 'Educational example only — not yet wired into the strategy builder.',
     simplifiedNote: 'Simplified illustration — the real position also involves stock or dynamic hedging management.',
     greeksSection: 'Greeks (illustrative)',
-    greeksSectionNote: 'Model estimate for understanding risk exposure — not live market Greeks.',
+    greeksSectionNote: 'Teaching shape only: focus on direction and concentration of risk, not exact market values.',
     greeksEmptyState: 'This strategy needs real positions or dynamic-hedge data for Greeks — showing text explanation only.',
   },
 }

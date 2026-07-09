@@ -2,6 +2,7 @@ import { number, optionChainRows, percent, price, strike } from '../core/dashboa
 import { useT } from '../i18n'
 import type { QverisOptionContract } from '../types/optionTypes'
 import type { StrategyCandidate } from '../types/strategyTypes'
+import type { DataStatus } from '../types/optionTypes'
 
 function compact(value: number | null | undefined) {
   return value === null || value === undefined ? '-' : number(value)
@@ -18,21 +19,32 @@ function quoteClass(action?: string) {
 export function OptionChainTable({
   contracts,
   expiration,
+  isLoading,
+  error,
+  status,
   selectedStrategy,
 }: {
   contracts: QverisOptionContract[]
   expiration?: string
+  isLoading?: boolean
+  error?: string
+  status?: DataStatus
   selectedStrategy?: StrategyCandidate
 }) {
   const { t, lang } = useT()
   const rows = optionChainRows(contracts, expiration, selectedStrategy)
+  const emptyText = isLoading
+    ? (lang === 'zh' ? '正在加载期权链…' : 'Loading option chain…')
+    : error
+      ? (lang === 'zh' ? `期权链拉取失败：${error}` : `Option chain failed: ${error}`)
+      : status === 'stale'
+        ? (lang === 'zh' ? '期权链为缓存数据，暂未拿到最新报价。' : 'Showing stale chain cache; latest quotes are unavailable.')
+        : (lang === 'zh' ? '期权链暂无可用合约。' : 'No option contracts available.')
 
   return (
     <div className="chain-matrix">
       {!rows.length && (
-        <div className="chain-empty">
-          {lang === 'zh' ? '期权链不可用。请检查 Qveris 数据状态。' : 'Option chain unavailable. Check Qveris data status.'}
-        </div>
+        <div className="chain-empty">{emptyText}</div>
       )}
       <table>
         <thead>

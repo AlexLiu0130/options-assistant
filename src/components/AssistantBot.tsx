@@ -16,21 +16,30 @@ type Message = {
   content: string
 }
 
-const chips = [
-  ['Find strategy', 'Find the best strategy for my current view.'],
-  ['Explain selected', 'Explain the selected strategy.'],
-  ['Compare candidates', 'Compare the current strategy candidates.'],
-  ['Risk check', 'Check whether the current strategy fits my risk budget.'],
-  ['Beginner help', 'Explain this in beginner-friendly terms.'],
-] as const
+const chips = {
+  en: [
+    ['Find strategy', 'Find the best strategy for my current view.'],
+    ['Explain selected', 'Explain the selected strategy.'],
+    ['Compare', 'Compare the current strategy candidates.'],
+    ['Risk check', 'Check whether the current strategy fits my risk budget.'],
+    ['Beginner help', 'Explain this in beginner-friendly terms.'],
+  ],
+  zh: [
+    ['找策略', '根据我当前观点找合适的策略。'],
+    ['解释当前策略', '解释当前选中的策略。'],
+    ['对比候选', '对比当前几个候选策略。'],
+    ['检查风险', '检查当前策略是否符合我的风险预算。'],
+    ['新手解释', '用新手能理解的方式解释。'],
+  ],
+} as const
 
-function renderAssistantAnswer(answer: AssistantChatResponse) {
+function renderAssistantAnswer(answer: AssistantChatResponse, lang: 'en' | 'zh') {
   return [
     answer.title,
     answer.answer,
-    ...(answer.sections ?? []).map((section) => `${section.title}: ${section.body}`),
+    ...(answer.sections ?? []).map((section) => `${section.title}\n${section.body}`),
     answer.followUpQuestion,
-    ...(answer.warnings ?? []).slice(0, 2).map((warning) => `Warning: ${warning}`),
+    ...(answer.warnings ?? []).slice(0, 2).map((warning) => `${lang === 'zh' ? '风险提示' : 'Warning'}\n${warning}`),
   ].filter(Boolean).join('\n\n')
 }
 
@@ -95,7 +104,7 @@ export function AssistantBot({
       if (Object.keys(updates).length) onStructuredUpdates?.(updates)
       setMessages((current) => [
         ...current,
-        { role: 'assistant', content: renderAssistantAnswer(answer) },
+        { role: 'assistant', content: renderAssistantAnswer(answer, lang) },
       ])
     } catch (error) {
       const answer = fallbackAssistantResponse(error instanceof Error ? error.message : 'Qveris AI is unavailable.')
@@ -121,7 +130,7 @@ export function AssistantBot({
             <button type="button" onClick={() => setOpen(false)} aria-label="Close Qveris AI"><X size={17} /></button>
           </header>
           <div className="assistant-chip-row">
-            {chips.map(([label, prompt]) => (
+            {chips[lang].map(([label, prompt]) => (
               <button key={label} type="button" onClick={() => void send(prompt)}>{label}</button>
             ))}
           </div>
@@ -129,7 +138,7 @@ export function AssistantBot({
             {messages.map((message, index) => (
               <p className={message.role} key={`${message.role}-${index}`}>{message.content}</p>
             ))}
-            {loading ? <p className="assistant"><Loader2 size={14} /> Thinking within Qveris limits...</p> : null}
+            {loading ? <p className="assistant"><Loader2 size={14} /> {lang === 'zh' ? '正在按 Qveris 边界分析…' : 'Thinking within Qveris limits...'}</p> : null}
           </div>
           <form
             className="assistant-input"
@@ -141,7 +150,7 @@ export function AssistantBot({
             <input
               value={input}
               onChange={(event) => setInput(event.target.value)}
-              placeholder="Ask about strategy, risk, payoff, or your market view..."
+              placeholder={lang === 'zh' ? '询问策略、风险、盈亏，或补充你的观点…' : 'Ask about strategy, risk, payoff, or your market view...'}
             />
             <button disabled={loading || !input.trim()} type="submit"><Send size={16} /></button>
           </form>

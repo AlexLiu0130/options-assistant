@@ -14,6 +14,7 @@ import type { ActiveSimulatorState } from '../core/simulatorChartEngine'
 import { BriefContent } from './AssistantExplanationPanel'
 import { StrategySimulator } from './PaperPlanTicket'
 import { GreeksQuadChart } from './GreeksQuadChart'
+type CardTab = 'overview' | 'adjust' | 'sim' | 'greeks' | 'explain'
 
 function tileVal(value: number) {
   const n = Math.round(value)
@@ -182,6 +183,7 @@ export function StrategyCard({
   const [saveLabel, setSaveLabel] = useState('')
   const [explanation, setExplanation] = useState('')
   const [explainState, setExplainState] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [activeTab, setActiveTab] = useState<CardTab>('overview')
   // null = no user adjustment yet → always use latest strategy prop
   const [adjustedStrategy, setAdjustedStrategy] = useState<StrategyCandidate | null>(null)
   const displayStrategy = adjustedStrategy ?? strategy
@@ -208,6 +210,7 @@ export function StrategyCard({
 
   async function explain(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation()
+    setActiveTab('explain')
     setExplainState('loading')
     try {
       const response = await fetch('/api/assistant/chat', {
@@ -258,6 +261,13 @@ export function StrategyCard({
     typeof displayStrategy.probabilityOfProfit === 'number'
       ? `${displayStrategy.probabilityOfProfit.toFixed(0)}%`
       : 'N/A'
+  const tabs: Array<{ id: CardTab; label: string; disabled?: boolean }> = [
+    { id: 'overview', label: lang === 'zh' ? '概览' : 'Overview' },
+    { id: 'adjust', label: lang === 'zh' ? '调整' : 'Adjust', disabled: !canAdjust },
+    { id: 'sim', label: lang === 'zh' ? '模拟' : 'Simulate' },
+    { id: 'greeks', label: 'Greeks' },
+    { id: 'explain', label: lang === 'zh' ? '解释' : 'Explain' },
+  ]
 
   return (
     <article
@@ -299,25 +309,42 @@ export function StrategyCard({
 
       {selected && (
         <div className="tile-expanded" onClick={(event) => event.stopPropagation()}>
-          {(strategy.rankReasons?.length || strategy.rankWarnings?.length) ? (
-            <div className="rank-reasons">
-              {strategy.rankReasons?.map((reason) => <span key={reason}>{rankText(reason, lang)}</span>)}
-              {strategy.rankWarnings?.map((warning) => <em key={warning}>{rankText(warning, lang)}</em>)}
-            </div>
-          ) : null}
-          <div className="legs">
-            {displayStrategy.legs.map((leg) => (
-              <div key={`${leg.action}-${leg.symbol ?? leg.strike}`}>
-                <LineChart size={12} />
-                <span className={leg.action === 'buy' ? 'buy-tag' : 'sell-tag'}>
-                  {leg.action === 'buy' ? t.card.buyToOpen : t.card.sellToOpen}
-                </span>
-                <strong>{leg.quantity} {leg.right} {money(leg.strike)} · {leg.expiration}</strong>
-                <em>{money(leg.premium)}</em>
-              </div>
+          <div className="tile-tabs">
+            {tabs.map((tab) => (
+              <button
+                className={activeTab === tab.id ? 'active' : ''}
+                disabled={tab.disabled}
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                type="button"
+              >
+                {tab.label}
+              </button>
             ))}
           </div>
-          {canAdjust && (
+          {activeTab === 'overview' && (
+            <>
+              {(strategy.rankReasons?.length || strategy.rankWarnings?.length) ? (
+                <div className="rank-reasons">
+                  {strategy.rankReasons?.map((reason) => <span key={reason}>{rankText(reason, lang)}</span>)}
+                  {strategy.rankWarnings?.map((warning) => <em key={warning}>{rankText(warning, lang)}</em>)}
+                </div>
+              ) : null}
+              <div className="legs">
+                {displayStrategy.legs.map((leg) => (
+                  <div key={`${leg.action}-${leg.symbol ?? leg.strike}`}>
+                    <LineChart size={12} />
+                    <span className={leg.action === 'buy' ? 'buy-tag' : 'sell-tag'}>
+                      {leg.action === 'buy' ? t.card.buyToOpen : t.card.sellToOpen}
+                    </span>
+                    <strong>{leg.quantity} {leg.right} {money(leg.strike)} · {leg.expiration}</strong>
+                    <em>{money(leg.premium)}</em>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          {activeTab === 'adjust' && canAdjust && (
             <LegEditor
               strategy={strategy}
               optionChain={optionChain!}
@@ -325,8 +352,9 @@ export function StrategyCard({
               onAdjusted={setAdjustedStrategy}
             />
           )}
-          <StrategySimulator strategy={displayStrategy} onProjectionChange={onProjectionChange} />
-          <GreeksQuadChart strategy={displayStrategy} underlyingPrice={underlyingPrice} />
+          {activeTab === 'sim' && <StrategySimulator strategy={displayStrategy} onProjectionChange={onProjectionChange} />}
+          {activeTab === 'greeks' && <GreeksQuadChart strategy={displayStrategy} underlyingPrice={underlyingPrice} />}
+          {activeTab === 'explain' && explanation ? <BriefContent text={explanation} isError={explainState === 'error'} lang={lang} ticker={ticker} /> : null}
           <div className="tile-actions">
             {saveLabel === 'Opened' ? (
               <button type="button" className="pp-view-link" onClick={() => { window.location.hash = '#/paper' }}>
@@ -340,7 +368,6 @@ export function StrategyCard({
               {t.card.explain}
             </button>
           </div>
-          {explanation ? <BriefContent text={explanation} isError={explainState === 'error'} lang={lang} ticker={ticker} /> : null}
         </div>
       )}
     </article>

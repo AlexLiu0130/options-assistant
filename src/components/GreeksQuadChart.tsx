@@ -154,10 +154,12 @@ export function GreeksQuadChart({
   strategy,
   underlyingPrice,
   expandable = true,
+  teaching = false,
 }: {
   strategy: StrategyCandidate
   underlyingPrice?: number
   expandable?: boolean
+  teaching?: boolean
 }) {
   const { t } = useT()
   const g = t.greeks
@@ -186,7 +188,9 @@ export function GreeksQuadChart({
     ? isZh
       ? `链路含 ${marketMetrics.join('/')} · 曲线为模型`
       : `Chain has ${marketMetrics.join('/')} · model curve`
-    : g.modelBadge
+    : teaching
+      ? g.teachingBadge
+      : g.modelBadge
 
   const descFor = (metric: string) =>
     g[`${metric}Desc` as 'deltaDesc' | 'gammaDesc' | 'thetaDesc' | 'vegaDesc'] ?? ''
@@ -206,7 +210,7 @@ export function GreeksQuadChart({
       <div className="gq-panel" style={{ '--panel-color': color } as React.CSSProperties}>
         <div className="gq-panel-head">
           <span className="gq-metric-name" style={{ color }}>{labelFor(panel.metric)}</span>
-          <span className="gq-current-val" style={{ color }}>{fmtCurrent(panel.currentValue)}</span>
+          {!teaching && <span className="gq-current-val" style={{ color }}>{fmtCurrent(panel.currentValue)}</span>}
         </div>
         <div className="gq-desc">{descFor(panel.metric)}</div>
         <MiniChart panel={panel} spotPrice={spot} color={color} gradId={gradId} />

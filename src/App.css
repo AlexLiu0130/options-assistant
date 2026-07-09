@@ -339,6 +339,24 @@
   background: var(--accent);
   color: #fff;
 }
+.data-status-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: -4px;
+}
+.data-status-chips span {
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+}
 .range-row > span {
   margin-left: 12px;
   font-size: 11px;
@@ -1095,6 +1113,32 @@
   padding: 12px 14px;
   background: #fbfdff;
   animation: fadeDown 0.2s ease-out both;
+}
+.tile-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+  margin-bottom: 10px;
+}
+.tile-tabs button {
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+}
+.tile-tabs button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.tile-tabs button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
 }
 
 .legs {
@@ -2257,9 +2301,7 @@
 
 /* ─── Leg Editor ─────────────────────────────────────────────── */
 .le-wrap {
-  margin-top: 12px;
-  border-top: 1px solid var(--border);
-  padding-top: 10px;
+  margin-top: 0;
 }
 .le-title {
   font-size: 10px;

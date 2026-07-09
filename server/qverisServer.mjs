@@ -37,7 +37,7 @@ const port = Number(process.env.API_PORT || 8787)
 const host = process.env.API_HOST || '127.0.0.1'
 const corsOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:5173'
 const serveStatic = process.env.SERVE_STATIC !== 'false'
-const refreshMs = Number(process.env.QVERIS_REFRESH_MS || 120000)
+const refreshMs = Number(process.env.QVERIS_REFRESH_MS || 60000)
 const closedCacheMs = Number(process.env.QVERIS_CLOSED_CACHE_MS || 6 * 60 * 60 * 1000)
 const openInterestCacheMs = Number(process.env.QVERIS_OPEN_INTEREST_CACHE_MS || 6 * 60 * 60 * 1000)
 const heavyLimit = Number(process.env.QVERIS_HEAVY_CONCURRENCY || 4)
@@ -53,13 +53,12 @@ const heavyQueue = []
 // QVeris tool IDs. These are executed only through the QVeris gateway, never by direct vendor API calls.
 const tools = {
   quote: 'finnhub_io_api.stock.quote',
-  liveQuote: 'eodhd.live_v2.us_quote_delayed.retrieve.v1.f0e13d45',
+  liveQuote: 'fiu_mcp_server.postv1stockquote.create.v2.1790f84e',
   ohlcv: 'eodhd.live_data.real_time.retrieve.v1.b60a4285',
   intraday: 'alphavantage.time-series.intraday.v1',
   dailyAdjusted: 'alphavantage.time-series.daily-adjusted.v1',
   options: 'qveris_finance.opt_chain',
   thetaQuote: 'theta_data.option.snapshot.quote.retrieve.v3.66abf829',
-  thetaMarketValue: 'theta_data.option.snapshot.marketvalue.retrieve.v3.293b6b16',
   thetaGreeks: 'theta_data.option.snapshot.greeks.firstorder.retrieve.v3.e74251d1',
   thetaOpenInterest: 'theta_data.option.snapshot.openinterest.retrieve.v3.46f70809',
   earnings: 'finnhub.calendar.earnings.retrieve.v1',
@@ -424,11 +423,14 @@ function normalizeQuote(ticker, quoteResult, ohlcvResult) {
 }
 
 function normalizeLiveQuote(ticker, result) {
-  const data = result?.data?.[`${ticker}.US`] ?? result?.data?.[ticker] ?? result?.[`${ticker}.US`] ?? result?.[ticker] ?? result?.data ?? result
-  const lastTradeMs = toNumber(data?.lastTradeTime ?? data?.timestamp)
+  const fiuRow = Array.isArray(result?.body)
+    ? result.body.find((item) => String(item?.symbol ?? '').toUpperCase() === `${ticker}.US`)
+    : undefined
+  const data = fiuRow?.snapshot ?? result?.data?.[`${ticker}.US`] ?? result?.data?.[ticker] ?? result?.[`${ticker}.US`] ?? result?.[ticker] ?? result?.data ?? result
+  const lastTradeMs = toNumber(data?.lastTradeTime ?? data?.timestamp ?? Date.parse(String(data?.time ?? '')))
   const timestamp = lastTradeMs && lastTradeMs > 1e12 ? Math.floor(lastTradeMs / 1000) : lastTradeMs
-  const price = toNumber(data?.lastTradePrice ?? data?.price ?? data?.close ?? data?.ethPrice)
-  const previousClose = toNumber(data?.previousClosePrice ?? data?.previousClose)
+  const price = toNumber(data?.lastTradePrice ?? data?.price ?? data?.last ?? data?.close ?? data?.ethPrice)
+  const previousClose = toNumber(data?.previousClosePrice ?? data?.previousClose ?? data?.preClose)
   const change = toNumber(data?.change) ?? (price !== null && previousClose !== null ? price - previousClose : null)
   return {
     ticker,
@@ -438,12 +440,12 @@ function normalizeLiveQuote(ticker, result) {
     low: toNumber(data?.low),
     previousClose,
     change,
-    changePercent: toNumber(data?.changePercent),
+    changePercent: toNumber(data?.changePercent ?? data?.changeRate),
     volume: toNumber(data?.volume ?? data?.size),
     timestamp: timestamp ?? 0,
     asOf: timestamp ? new Date(timestamp * 1000).toISOString() : new Date().toISOString(),
     source: 'QVeris',
-    marketDataType: 'delayed_quote',
+    marketDataType: fiuRow ? 'realtime_quote' : 'delayed_quote',
     candles: [],
   }
 }
@@ -936,7 +938,7 @@ async function handle(req, res) {
       if (cachedBody) return json(res, 200, cachedBody)
       const rangeParams = marketRangeParams(range)
       const [liveQuoteResult, ohlcvResult, historyResult] = await Promise.allSettled([
-        qverisExecute(tools.liveQuote, { s: `${ticker}.US`, fmt: 'json' }),
+        qverisExecute(tools.liveQuote, { fields: ['snapshot'], symbols: [`${ticker}.US`], timeMode: 0 }),
         qverisExecute(tools.ohlcv, {
           symbol: `${ticker}.US`,
           fmt: 'json',
@@ -999,11 +1001,10 @@ async function handle(req, res) {
       const cachedBody = cached(optionsCache, 'options', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)
       try {
-        const [liveQuoteResult, raw, thetaQuote, thetaMarketValue, thetaGreeks, thetaOpenInterest] = await Promise.allSettled([
-          qverisExecute(tools.liveQuote, { s: `${ticker}.US`, fmt: 'json' }),
+        const [liveQuoteResult, raw, thetaQuote, thetaGreeks, thetaOpenInterest] = await Promise.allSettled([
+          qverisExecute(tools.liveQuote, { fields: ['snapshot'], symbols: [`${ticker}.US`], timeMode: 0 }),
           useTheta ? Promise.resolve(null) : qverisHeavyExecute(tools.options, { symbol: ticker, market: 'US' }, 24000),
           useTheta ? qverisHeavyExecute(tools.thetaQuote, { symbol: ticker, expiration: '*', strike: '*', right: 'both', max_dte: 220, strike_range: 25, format: 'json' }, 100000) : Promise.resolve(null),
-          useTheta ? qverisHeavyExecute(tools.thetaMarketValue, { symbol: ticker, expiration: '*', strike: '*', right: 'both', max_dte: 220, strike_range: 25, format: 'json' }, 100000) : Promise.resolve(null),
           useTheta ? qverisHeavyExecute(tools.thetaGreeks, { symbol: ticker, expiration: '*', strike: '*', right: 'both', max_dte: 220, strike_range: 25, format: 'json' }, 100000) : Promise.resolve(null),
           useTheta ? getThetaOpenInterest(ticker) : Promise.resolve(null),
         ])
@@ -1011,11 +1012,11 @@ async function handle(req, res) {
         const quoteSpot = liveQuote?.price ?? null
         let source = 'qveris_finance'
         let normalized
-        if (useTheta && thetaQuote.status === 'fulfilled' && thetaMarketValue.status === 'fulfilled' && thetaGreeks.status === 'fulfilled') {
+        if (useTheta && thetaQuote.status === 'fulfilled' && thetaGreeks.status === 'fulfilled') {
           normalized = normalizeThetaOptions(
             ticker,
             await parseToolContent(thetaQuote.value),
-            await parseToolContent(thetaMarketValue.value),
+            null,
             await parseToolContent(thetaGreeks.value),
             thetaOpenInterest.status === 'fulfilled' ? thetaOpenInterest.value : [],
             quoteSpot,

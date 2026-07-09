@@ -329,6 +329,7 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
         candles: market.data.candles?.length ? market.data.candles : options.data?.market?.candles,
       }
     : options.data?.market
+  const chartMarket = displayedMarket?.candles?.length ? displayedMarket : undefined
 
   // Fallback: estimate price from deep-ITM calls when market data is unavailable
   const chainPrice = useMemo(() => {
@@ -560,8 +561,8 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
 
           <section className="oa-chart-card">
             <UnderlyingPriceChart
-              market={displayedMarket}
-              isLoadingCandles={!market.data && !market.error && !displayedMarket}
+              market={chartMarket}
+              isLoadingCandles={!chartMarket && !market.error}
               selectedStrategy={selectedStrategy}
               simulatorProjection={selectedProjection}
             />

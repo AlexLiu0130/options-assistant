@@ -480,6 +480,7 @@ function normalizeLiveQuote(ticker, result) {
 function mergeLiveQuoteCandle(candles, quote, kind) {
   if (!quote?.price || !quote.timestamp) return candles
   const copy = [...candles]
+  if (!copy.length) return copy
   const liveDate = new Date(quote.timestamp * 1000).toISOString().slice(0, 10)
   const last = copy.at(-1)
   const lastDate = typeof last?.time === 'number'

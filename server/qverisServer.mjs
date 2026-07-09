@@ -37,7 +37,7 @@ const port = Number(process.env.API_PORT || 8787)
 const host = process.env.API_HOST || '127.0.0.1'
 const corsOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:5173'
 const serveStatic = process.env.SERVE_STATIC !== 'false'
-const refreshMs = Number(process.env.QVERIS_REFRESH_MS || 60000)
+const refreshMs = Number(process.env.QVERIS_REFRESH_MS || 120000)
 const closedCacheMs = Number(process.env.QVERIS_CLOSED_CACHE_MS || 6 * 60 * 60 * 1000)
 const heavyLimit = Number(process.env.QVERIS_HEAVY_CONCURRENCY || 4)
 const marketCache = new Map()

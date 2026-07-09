@@ -38,12 +38,14 @@ const host = process.env.API_HOST || '127.0.0.1'
 const corsOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:5173'
 const serveStatic = process.env.SERVE_STATIC !== 'false'
 const refreshMs = Number(process.env.QVERIS_REFRESH_MS || 60000)
+const quoteRefreshMs = Number(process.env.QVERIS_QUOTE_REFRESH_MS || 5000)
 const marketRefreshMs = Number(process.env.QVERIS_MARKET_REFRESH_MS || 15000)
 const optionsRefreshMs = Number(process.env.QVERIS_OPTIONS_REFRESH_MS || 180000)
 const closedCacheMs = Number(process.env.QVERIS_CLOSED_CACHE_MS || 6 * 60 * 60 * 1000)
 const openInterestCacheMs = Number(process.env.QVERIS_OPEN_INTEREST_CACHE_MS || 6 * 60 * 60 * 1000)
 const heavyLimit = Number(process.env.QVERIS_HEAVY_CONCURRENCY || 4)
 const marketCache = new Map()
+const quoteCache = new Map()
 const optionsCache = new Map()
 const openInterestCache = new Map()
 const qverisInflight = new Map()
@@ -928,6 +930,21 @@ async function handle(req, res) {
         return json(res, 200, agentFallbackResponse(agentPlan, isZh))
       }
       return json(res, 200, enforceAgentResponse(parsed, marketContext, agentPlan, isZh))
+    }
+
+    if (url.pathname.startsWith('/api/quote/')) {
+      const ticker = tickerFromPath(url.pathname, '/api/quote/')
+      if (!ticker) throw safeError('Ticker is required.', 400)
+      requireSupportedTicker(ticker)
+      const cacheKey = ticker
+      const cachedBody = cached(quoteCache, 'quote', cacheKey)
+      if (cachedBody) return json(res, 200, cachedBody)
+      const quote = normalizeLiveQuote(ticker, await qverisExecute(tools.liveQuote, {
+        fields: ['snapshot'],
+        symbols: [`${ticker}.US`],
+        timeMode: 0,
+      }))
+      return json(res, 200, cacheSet(quoteCache, 'quote', cacheKey, quote, quoteRefreshMs))
     }
 
     if (url.pathname.startsWith('/api/market/')) {

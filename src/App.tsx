@@ -71,6 +71,9 @@ const lastTickerKey = 'qveris-last-ticker'
 const fetchCache = new Map<string, { expires: number; data: unknown }>()
 const fetchInflight = new Map<string, Promise<unknown>>()
 const fetchCacheMs = 60000
+const quotePollMs = 5000
+const marketPollMs = 60000
+const optionsPollMs = 60000
 
 const initialForm: FormState = {
   ticker: '',
@@ -285,9 +288,24 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
       .catch((error: Error) => { if (!cancelled) setMarket({ error: error.message }) })
     setMarket({})
     void load()
-    const timer = window.setInterval(() => void load(), fetchCacheMs)
+    const timer = window.setInterval(() => void load(), marketPollMs)
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [priceRange, ticker, unsupportedTicker])
+
+  useEffect(() => {
+    if (!ticker || unsupportedTicker) return
+    let cancelled = false
+    const load = () => fetchJson<QverisMarketSnapshot>(`/api/quote/${ticker}`, { force: true })
+      .then((quote) => {
+        if (cancelled) return
+        setMarket((current) => ({ data: { ...current.data, ...quote, candles: current.data?.candles ?? quote.candles } }))
+        setDataPulse((n) => n + 1)
+      })
+      .catch(() => {})
+    void load()
+    const timer = window.setInterval(() => void load(), quotePollMs)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [ticker, unsupportedTicker])
 
   useEffect(() => {
     if (!ticker || unsupportedTicker) { setOptions({}); return }
@@ -297,7 +315,7 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
       .catch((error: Error) => { if (!cancelled) setOptions({ error: error.message }) })
     setOptions({})
     void load()
-    const timer = window.setInterval(() => void load(), fetchCacheMs)
+    const timer = window.setInterval(() => void load(), optionsPollMs)
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [ticker, unsupportedTicker])
 

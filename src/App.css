@@ -558,6 +558,27 @@
   background: #e8f2ec !important;
   font-weight: 700 !important;
 }
+.chain-matrix tbody tr.spot-row td {
+  background: rgba(11, 122, 59, 0.055);
+}
+.chain-matrix tbody tr.spot-row .strike-col {
+  position: relative;
+  background: #dcfce7 !important;
+  color: #0b7a3b !important;
+  font-weight: 800 !important;
+}
+.spot-marker {
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: var(--accent);
+  color: #fff;
+  font: 9px var(--font-mono);
+  font-weight: 800;
+}
 
 /* Strategy action highlights */
 .quote.buy {

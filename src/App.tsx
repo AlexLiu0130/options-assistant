@@ -552,6 +552,7 @@ function TradingPage({ initialTicker }: { initialTicker: string }) {
               isLoading={!options.data && !options.error}
               error={options.error}
               status={options.data?.status}
+              underlyingPrice={displayedMarket?.price ?? undefined}
               selectedStrategy={selectedStrategy}
             />
           </section>

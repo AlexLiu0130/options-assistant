@@ -22,6 +22,7 @@ export function OptionChainTable({
   isLoading,
   error,
   status,
+  underlyingPrice,
   selectedStrategy,
 }: {
   contracts: QverisOptionContract[]
@@ -29,10 +30,16 @@ export function OptionChainTable({
   isLoading?: boolean
   error?: string
   status?: DataStatus
+  underlyingPrice?: number
   selectedStrategy?: StrategyCandidate
 }) {
   const { t, lang } = useT()
   const rows = optionChainRows(contracts, expiration, selectedStrategy)
+  const nearestStrike = typeof underlyingPrice === 'number' && rows.length
+    ? rows.reduce((best, row) => Math.abs((row.strike ?? 0) - underlyingPrice) < Math.abs((best ?? 0) - underlyingPrice)
+      ? row.strike
+      : best, rows[0].strike)
+    : undefined
   const emptyText = isLoading
     ? (lang === 'zh' ? '正在加载期权链…' : 'Loading option chain…')
     : error
@@ -71,14 +78,20 @@ export function OptionChainTable({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr className={row.selectedStrike ? 'selected' : ''} key={row.strike ?? 'strike'}>
+            <tr
+              className={`${row.selectedStrike ? 'selected' : ''}${row.strike === nearestStrike ? ' spot-row' : ''}`}
+              key={row.strike ?? 'strike'}
+            >
               <td>{compact(row.callOi)}</td>
               <td>{compact(row.callVolume)}</td>
               <td>{compactPercent(row.callIv)}</td>
               <td>{compact(row.callDelta)}</td>
               <td><span className={quoteClass(row.callBidAction)}>{price(row.callBid)}</span></td>
               <td><span className={quoteClass(row.callAskAction)}>{price(row.callAsk)}</span></td>
-              <td className="strike-col">{strike(row.strike)}</td>
+              <td className="strike-col">
+                {row.strike === nearestStrike && <span className="spot-marker">{lang === 'zh' ? '现价' : 'Spot'} {price(underlyingPrice)}</span>}
+                {strike(row.strike)}
+              </td>
               <td><span className={quoteClass(row.putBidAction)}>{price(row.putBid)}</span></td>
               <td><span className={quoteClass(row.putAskAction)}>{price(row.putAsk)}</span></td>
               <td>{compact(row.putDelta)}</td>

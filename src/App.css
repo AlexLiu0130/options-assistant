@@ -574,9 +574,9 @@
 }
 .spot-marker {
   position: absolute;
-  left: 6px;
+  left: 50%;
   top: 50%;
-  transform: translateY(-50%);
+  transform: translate(-50%, -50%);
   border-radius: 999px;
   padding: 1px 6px;
   background: var(--accent);

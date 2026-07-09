@@ -3152,28 +3152,6 @@
   color: var(--text);
 }
 
-:root[data-theme='dark'] .chain-matrix th,
-:root[data-theme='dark'] .chain-matrix tbody tr:hover td {
-  background: var(--surface-2);
-}
-:root[data-theme='dark'] .chain-groups th {
-  background: var(--surface) !important;
-}
-:root[data-theme='dark'] .chain-matrix .strike-head,
-:root[data-theme='dark'] .chain-matrix .strike-col {
-  background: #22314a !important;
-  border-color: #33445f !important;
-}
-:root[data-theme='dark'] .chain-matrix tbody tr.selected td,
-:root[data-theme='dark'] .chain-matrix tbody tr.spot-row td {
-  background: rgba(34, 197, 94, 0.08);
-}
-:root[data-theme='dark'] .chain-matrix tbody tr.selected .strike-col,
-:root[data-theme='dark'] .chain-matrix tbody tr.spot-row .strike-col {
-  background: rgba(34, 197, 94, 0.18) !important;
-  color: var(--accent) !important;
-}
-
 /* Left rail: pill active state with edge indicator */
 .oa-rail {
   gap: 6px;
@@ -3739,3 +3717,96 @@
 /* Direction cards: hover lift */
 .direction-cards button:hover { transform: translateY(-1px); }
 .direction-cards button.active:hover { transform: scale(1.04); }
+
+/* ─── Dark mode polish: keep it calm, not neon-terminal ───────── */
+:root[data-theme='dark'] .oa-topbar,
+:root[data-theme='dark'] .home-topbar,
+:root[data-theme='dark'] .oa-rail {
+  background: rgba(16, 24, 36, 0.96);
+  border-color: var(--border);
+  box-shadow: none;
+}
+:root[data-theme='dark'] .home-shell {
+  background:
+    radial-gradient(circle at 18% 12%, rgba(25, 164, 99, 0.12), transparent 38%),
+    radial-gradient(circle at 82% 18%, rgba(59, 130, 246, 0.10), transparent 34%),
+    var(--bg);
+}
+:root[data-theme='dark'] .home-shell::before {
+  background-image: radial-gradient(rgba(231, 238, 248, 0.045) 1px, transparent 1px);
+}
+:root[data-theme='dark'] .oa-chart-card,
+:root[data-theme='dark'] .terminal-section,
+:root[data-theme='dark'] .strategy-tile,
+:root[data-theme='dark'] .preference-panel,
+:root[data-theme='dark'] .assistant-panel,
+:root[data-theme='dark'] .chain-shell,
+:root[data-theme='dark'] .pp-strip,
+:root[data-theme='dark'] .pp-table-wrap,
+:root[data-theme='dark'] .pp-modal,
+:root[data-theme='dark'] .edu-toolbar,
+:root[data-theme='dark'] .edu-list,
+:root[data-theme='dark'] .home-feature-card,
+:root[data-theme='dark'] .home-search,
+:root[data-theme='dark'] .home-visual-card {
+  background: var(--surface);
+  border-color: var(--border);
+}
+:root[data-theme='dark'] .tile-expanded,
+:root[data-theme='dark'] .chain-matrix th,
+:root[data-theme='dark'] .pp-table thead th,
+:root[data-theme='dark'] .edu-payoff-metrics > div,
+:root[data-theme='dark'] .edu-not-supported-note,
+:root[data-theme='dark'] .edu-greeks-empty,
+:root[data-theme='dark'] .payoff-mini,
+:root[data-theme='dark'] .chart-toggles button,
+:root[data-theme='dark'] .data-status-chips span {
+  background: var(--surface-2);
+}
+:root[data-theme='dark'] .candidate-list[data-view] .tile-head,
+:root[data-theme='dark'] .chain-groups th,
+:root[data-theme='dark'] .tile-tabs button,
+:root[data-theme='dark'] .pp-tabs button.active,
+:root[data-theme='dark'] .payoff-mini-badge-simplified,
+:root[data-theme='dark'] .assistant-drawer,
+:root[data-theme='dark'] .assistant-drawer header button,
+:root[data-theme='dark'] .assistant-chip-row button,
+:root[data-theme='dark'] .assistant-input input {
+  background: var(--surface) !important;
+}
+:root[data-theme='dark'] .chain-matrix tbody tr:hover td,
+:root[data-theme='dark'] .pp-table tbody tr:hover,
+:root[data-theme='dark'] .edu-list-item:hover,
+:root[data-theme='dark'] .assistant-messages p.assistant {
+  background: #1a2638;
+}
+:root[data-theme='dark'] .chain-matrix .strike-head,
+:root[data-theme='dark'] .chain-matrix .strike-col {
+  background: #1d2b40 !important;
+  border-color: var(--border) !important;
+}
+:root[data-theme='dark'] .chain-matrix tbody tr.selected td,
+:root[data-theme='dark'] .chain-matrix tbody tr.spot-row td,
+:root[data-theme='dark'] .edu-list-item.active {
+  background: rgba(25, 164, 99, 0.10);
+}
+:root[data-theme='dark'] .chain-matrix tbody tr.selected .strike-col,
+:root[data-theme='dark'] .chain-matrix tbody tr.spot-row .strike-col {
+  background: rgba(25, 164, 99, 0.18) !important;
+  color: var(--profit) !important;
+}
+:root[data-theme='dark'] .strategy-tile:hover {
+  border-color: #3a4a62;
+  box-shadow: var(--shadow-sm);
+}
+:root[data-theme='dark'] .asset-logo {
+  background: linear-gradient(135deg, #164e63, #19a463);
+  box-shadow: none;
+}
+:root[data-theme='dark'] .home-hero h1,
+:root[data-theme='dark'] .home-headline-accent {
+  color: var(--text);
+  background: none;
+  -webkit-background-clip: initial;
+  background-clip: initial;
+}

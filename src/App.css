@@ -11,6 +11,10 @@
   from { opacity: 0; }
   to   { opacity: 1; }
 }
+@keyframes dataFlash {
+  0%   { box-shadow: 0 0 0 0 var(--accent-mid); border-color: var(--accent); color: var(--accent); }
+  100% { box-shadow: 0 0 0 8px transparent; }
+}
 
 /* ─── Shell layout ───────────────────────────────────────────── */
 .oa-shell {
@@ -321,6 +325,7 @@
   color: var(--muted);
   font-size: 10.5px;
   font-weight: 700;
+  animation: dataFlash 0.9s ease-out both;
 }
 .range-row > span {
   margin-left: 12px;

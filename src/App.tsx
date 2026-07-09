@@ -31,7 +31,7 @@ import { recommendStrategyTypes } from './core/strategyRecommendationEngine'
 import { isSupportedUnderlying } from './core/supportedUnderlyings'
 import { useT } from './i18n'
 import type { QverisMarketSnapshot, QverisOptionsResponse } from './types/optionTypes'
-import type { Direction, ExperienceLevel, Strength } from './types/strategyTypes'
+import type { Direction, ExperienceLevel, StrategyCandidate, Strength } from './types/strategyTypes'
 import './App.css'
 
 function useHash() {
@@ -141,10 +141,12 @@ function DataStatusChips({
   market,
   options,
   lang,
+  pulseKey,
 }: {
   market: LoadState<QverisMarketSnapshot>
   options: LoadState<QverisOptionsResponse>
   lang: 'en' | 'zh'
+  pulseKey: number
 }) {
   const chips = [
     market.data
@@ -166,7 +168,7 @@ function DataStatusChips({
   ].filter(Boolean)
 
   return (
-    <div className="data-status-chips" aria-label={lang === 'zh' ? '数据状态' : 'Data status'}>
+    <div className="data-status-chips" aria-label={lang === 'zh' ? '数据状态' : 'Data status'} key={pulseKey}>
       {chips.map((chip) => <span key={chip}>{chip}</span>)}
     </div>
   )
@@ -263,6 +265,8 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
   const [strategyFilter, setStrategyFilter] = useState<StrategyFilter>(initialForm.view)
   const [selectedStrategyId, setSelectedStrategyId] = useState<string>()
   const [activeSimulator, setActiveSimulator] = useState<ActiveSimulatorState>()
+  const [dataPulse, setDataPulse] = useState(0)
+  const [strategyOverrides, setStrategyOverrides] = useState<Record<string, StrategyCandidate>>({})
   const ticker = submitted.ticker.trim().toUpperCase()
   const unsupportedTicker = Boolean(ticker && !isSupportedUnderlying(ticker))
   const [market, setMarket] = useState<LoadState<QverisMarketSnapshot>>({})
@@ -277,7 +281,7 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
     if (!ticker || unsupportedTicker) { setMarket({}); return }
     let cancelled = false
     const load = () => fetchJson<QverisMarketSnapshot>(`/api/market/${ticker}?range=${priceRange}`, { force: true })
-      .then((data) => { if (!cancelled) setMarket({ data }) })
+      .then((data) => { if (!cancelled) { setMarket({ data }); setDataPulse((n) => n + 1) } })
       .catch((error: Error) => { if (!cancelled) setMarket({ error: error.message }) })
     setMarket({})
     void load()
@@ -289,13 +293,17 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
     if (!ticker || unsupportedTicker) { setOptions({}); return }
     let cancelled = false
     const load = () => fetchJson<QverisOptionsResponse>(`/api/options/${ticker}`, { force: true })
-      .then((data) => { if (!cancelled) setOptions({ data }) })
+      .then((data) => { if (!cancelled) { setOptions({ data }); setDataPulse((n) => n + 1) } })
       .catch((error: Error) => { if (!cancelled) setOptions({ error: error.message }) })
     setOptions({})
     void load()
     const timer = window.setInterval(() => void load(), fetchCacheMs)
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [ticker, unsupportedTicker])
+
+  useEffect(() => {
+    setStrategyOverrides({})
+  }, [selectedExpiration, ticker])
 
   const displayedMarket = market.data
     ? {
@@ -352,7 +360,8 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
         return true
       })
   }, [options.data, parsedView, profileApplied, strategyExpirationOverride, strategyFilter])
-  const selectedStrategy = selectedStrategyId ? strategies.find((strategy) => strategy.id === selectedStrategyId) : undefined
+  const selectedBaseStrategy = selectedStrategyId ? strategies.find((strategy) => strategy.id === selectedStrategyId) : undefined
+  const selectedStrategy = selectedBaseStrategy ? (strategyOverrides[selectedBaseStrategy.id] ?? selectedBaseStrategy) : undefined
   const selectedProjection =
     activeSimulator && activeSimulator.strategyId === selectedStrategy?.id ? activeSimulator.projection : undefined
   const referenceStrategy = selectedStrategy ?? strategies[0]
@@ -445,6 +454,13 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
     }))
   }
 
+  function updateAdjustedStrategy(baseId: string, adjusted: StrategyCandidate) {
+    setStrategyOverrides((current) => ({ ...current, [baseId]: adjusted }))
+    setSelectedStrategyId(baseId)
+    const expiry = adjusted.legs[0]?.expiration
+    if (expiry) setChainExpiration(expiry)
+  }
+
   return (
     <main className="oa-shell">
       <header className="oa-topbar">
@@ -522,7 +538,7 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
             <b className="loss">{formatMoney(referenceStrategy?.expectedMove?.low)}</b>
           </div>
 
-          <DataStatusChips market={market} options={options} lang={lang} />
+          <DataStatusChips market={market} options={options} lang={lang} pulseKey={dataPulse} />
 
           <section className="oa-chart-card">
             <UnderlyingPriceChart
@@ -683,6 +699,7 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
                 key={strategy.id}
                 onSelect={(item) => setSelectedStrategyId((current) => (current === item.id ? undefined : item.id))}
                 onProjectionChange={setActiveSimulator}
+                onAdjusted={updateAdjustedStrategy}
                 onPaperOrderFilled={() => {}}
                 selected={strategy.id === selectedStrategy?.id}
                 strategy={strategy}

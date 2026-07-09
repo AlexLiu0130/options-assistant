@@ -164,6 +164,7 @@ export function StrategyCard({
   onSelect,
   underlyingPrice,
   onProjectionChange,
+  onAdjusted,
   onPaperOrderFilled,
   ticker,
   optionChain,
@@ -174,6 +175,7 @@ export function StrategyCard({
   onSelect?: (strategy: StrategyCandidate) => void
   underlyingPrice?: number
   onProjectionChange?: (state: ActiveSimulatorState) => void
+  onAdjusted?: (baseId: string, strategy: StrategyCandidate) => void
   onPaperOrderFilled?: () => void
   ticker?: string
   optionChain?: QverisOptionsResponse
@@ -349,7 +351,10 @@ export function StrategyCard({
               strategy={strategy}
               optionChain={optionChain!}
               parsedView={parsedView!}
-              onAdjusted={setAdjustedStrategy}
+              onAdjusted={(next) => {
+                setAdjustedStrategy(next)
+                onAdjusted?.(strategy.id, next)
+              }}
             />
           )}
           {activeTab === 'sim' && <StrategySimulator strategy={displayStrategy} onProjectionChange={onProjectionChange} />}

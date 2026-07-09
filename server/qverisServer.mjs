@@ -38,6 +38,8 @@ const host = process.env.API_HOST || '127.0.0.1'
 const corsOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:5173'
 const serveStatic = process.env.SERVE_STATIC !== 'false'
 const refreshMs = Number(process.env.QVERIS_REFRESH_MS || 60000)
+const marketRefreshMs = Number(process.env.QVERIS_MARKET_REFRESH_MS || 15000)
+const optionsRefreshMs = Number(process.env.QVERIS_OPTIONS_REFRESH_MS || 180000)
 const closedCacheMs = Number(process.env.QVERIS_CLOSED_CACHE_MS || 6 * 60 * 60 * 1000)
 const openInterestCacheMs = Number(process.env.QVERIS_OPEN_INTEREST_CACHE_MS || 6 * 60 * 60 * 1000)
 const heavyLimit = Number(process.env.QVERIS_HEAVY_CONCURRENCY || 4)
@@ -989,7 +991,7 @@ async function handle(req, res) {
         candles: finalCandles,
         dataGaps,
         message: dataGaps.length ? 'QVeris market data loaded with partial fallback.' : 'QVeris delayed quote and chart data loaded.',
-      }))
+      }, marketRefreshMs))
     }
 
     if (url.pathname.startsWith('/api/options/')) {
@@ -1068,7 +1070,7 @@ async function handle(req, res) {
             ...(source === 'theta_snapshot' ? ['QVERIS_DATA_GAP: stock quote snapshot may be exchange-delayed; gamma is not included in this pass.'] : ['QVERIS_DATA_GAP: theta/gamma/vega may be absent when the routed provider does not return them.']),
             'QVERIS_DATA_GAP: option reference master unavailable; US equity multiplier 100 remains an assumption.',
           ],
-        }))
+        }, optionsRefreshMs))
       } catch (error) {
         return json(
           res,

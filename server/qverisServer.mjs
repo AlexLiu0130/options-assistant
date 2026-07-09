@@ -18,6 +18,7 @@ import {
 } from './paperTradeRuntime.mjs'
 import {
   isSupportedUnderlying,
+  PREWARM_SYMBOLS,
   supportedUniversePayload,
 } from './supportedUnderlyings.mjs'
 
@@ -44,15 +45,23 @@ const optionsRefreshMs = Number(process.env.QVERIS_OPTIONS_REFRESH_MS || 180000)
 const closedCacheMs = Number(process.env.QVERIS_CLOSED_CACHE_MS || 6 * 60 * 60 * 1000)
 const openInterestCacheMs = Number(process.env.QVERIS_OPEN_INTEREST_CACHE_MS || 6 * 60 * 60 * 1000)
 const heavyLimit = Number(process.env.QVERIS_HEAVY_CONCURRENCY || 4)
+const prewarmEnabled = process.env.QVERIS_PREWARM_ENABLED !== 'false'
+const prewarmIntervalMs = Number(process.env.QVERIS_PREWARM_INTERVAL_MS || 15000)
+const prewarmSymbols = String(process.env.QVERIS_PREWARM_SYMBOLS || PREWARM_SYMBOLS.join(','))
+  .split(',')
+  .map((symbol) => tickerFromPath(symbol, ''))
+  .filter(isSupportedUnderlying)
 const marketCache = new Map()
 const quoteCache = new Map()
 const optionsCache = new Map()
 const openInterestCache = new Map()
 const qverisInflight = new Map()
+const prewarmInflight = new Set()
 const cacheDir = new URL('../.cache/qveris/', import.meta.url)
 const staticRoot = fileURLToPath(new URL('../dist/', import.meta.url))
 let heavyActive = 0
 const heavyQueue = []
+let prewarmCursor = 0
 
 // QVeris tool IDs. These are executed only through the QVeris gateway, never by direct vendor API calls.
 const tools = {
@@ -241,6 +250,20 @@ function cacheSet(cache, bucket, key, body, ttlMs) {
 
 function cacheFile(bucket, key) {
   return new URL(`${bucket}-${encodeURIComponent(key)}.json`, cacheDir)
+}
+
+function startPrewarm(origin) {
+  if (!prewarmEnabled || !prewarmSymbols.length) return
+  const timer = setInterval(() => {
+    if (!isUsRegularMarketOpen()) return
+    const symbol = prewarmSymbols[prewarmCursor++ % prewarmSymbols.length]
+    if (prewarmInflight.has(symbol) || cached(optionsCache, 'options', `${symbol}:open`)) return
+    prewarmInflight.add(symbol)
+    fetch(`${origin}/api/options/${symbol}?live=1`)
+      .catch(() => {})
+      .finally(() => prewarmInflight.delete(symbol))
+  }, prewarmIntervalMs)
+  timer.unref?.()
 }
 
 function isUsRegularMarketOpen(date = new Date()) {
@@ -1144,6 +1167,8 @@ if (process.argv.includes('--smoke')) {
   console.log(JSON.stringify({ ok: true, ticker: ticker.toUpperCase(), fields: Object.keys(market).sort() }, null, 2))
 } else {
   createServer(handle).listen(port, host, () => {
-    console.log(`QVeris API listening on http://${host}:${port}`)
+    const origin = `http://${host}:${port}`
+    startPrewarm(origin)
+    console.log(`QVeris API listening on ${origin}`)
   })
 }

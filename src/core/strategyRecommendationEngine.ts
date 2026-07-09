@@ -177,7 +177,16 @@ function bestLongOption(
     const absDelta = Math.abs(contract.delta ?? 0)
     return absDelta >= min && absDelta <= max
   })
-  return [...(matches.length ? matches : contracts)].sort(
+  const candidatePool = matches.length ? matches : contracts
+  const right = candidatePool[0]?.right
+  const directionalPool = candidatePool.filter((contract) =>
+    right === 'call'
+      ? (contract.strike ?? Number.POSITIVE_INFINITY) <= fallbackTarget
+      : right === 'put'
+        ? (contract.strike ?? Number.NEGATIVE_INFINITY) >= fallbackTarget
+        : true,
+  )
+  return [...(directionalPool.length ? directionalPool : candidatePool)].sort(
     (a, b) =>
       deltaDistance(a, target) - deltaDistance(b, target) ||
       Math.abs((a.strike ?? 0) - fallbackTarget) - Math.abs((b.strike ?? 0) - fallbackTarget),

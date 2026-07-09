@@ -174,6 +174,24 @@ assert.deepEqual(
   recommendStrategyTypes(viewFor('bullish'), optionsFixture, chainExpiration, { rank: false }).map((item) => item.id),
   ['long-call', 'bull-call-spread', 'cash-secured-put', 'bull-put-spread', 'long-call-butterfly'],
 )
+const otmLongTrapFixture = {
+  ...optionsFixture,
+  contracts: optionsFixture.contracts.map((item) => {
+    if (item.right === 'call' && item.expiration === chainExpiration && item.strike === 100) return { ...item, delta: 0.52 }
+    if (item.right === 'call' && item.expiration === chainExpiration && item.strike === 105) return { ...item, delta: 0.45 }
+    if (item.right === 'put' && item.expiration === chainExpiration && item.strike === 95) return { ...item, delta: -0.45 }
+    if (item.right === 'put' && item.expiration === chainExpiration && item.strike === 100) return { ...item, delta: -0.52 }
+    return item
+  }),
+}
+const strongBullLongCall = recommendStrategyTypes({ ...viewFor('bullish'), strength: 'strong' }, otmLongTrapFixture, chainExpiration, { rank: false }).find(
+  (item) => item.id === 'long-call',
+)
+const strongBearLongPut = recommendStrategyTypes({ ...viewFor('bearish'), strength: 'strong' }, otmLongTrapFixture, chainExpiration, { rank: false }).find(
+  (item) => item.id === 'long-put',
+)
+assert.ok((strongBullLongCall?.legs[0]?.strike ?? Infinity) <= view.current_price)
+assert.ok((strongBearLongPut?.legs[0]?.strike ?? 0) >= view.current_price)
 const noOtmPutFixture = {
   ...optionsFixture,
   contracts: optionsFixture.contracts.map((item) =>

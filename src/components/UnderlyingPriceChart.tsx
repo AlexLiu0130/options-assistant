@@ -1,7 +1,7 @@
 import { BaselineSeries, CandlestickSeries, HistogramSeries, LineSeries, LineStyle, createChart } from 'lightweight-charts'
 import type { IChartApi, ISeriesApi } from 'lightweight-charts'
 import type { Time, UTCTimestamp } from 'lightweight-charts'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { marketCandles, money } from '../core/dashboardData'
 import { buildSimulatorChartProjection, type SimulatorChartProjection } from '../core/simulatorChartEngine'
 import type { QverisMarketSnapshot } from '../types/optionTypes'
@@ -54,6 +54,9 @@ export function UnderlyingPriceChart({
   const ref = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  const [showEmLines, setShowEmLines] = useState(false)
+  const [showLegLines, setShowLegLines] = useState(false)
+  const [showPayoffZones, setShowPayoffZones] = useState(true)
 
   useEffect(() => {
     if (!ref.current) return
@@ -121,13 +124,15 @@ export function UnderlyingPriceChart({
         style: LineStyle.Dotted,
         label: true,
       })),
-      ...(selectedStrategy?.legs ?? []).map((leg) => ({
-        title: '',
-        value: leg.strike,
-        color: leg.action === 'buy' ? '#12803c' : '#d93535',
-        style: LineStyle.Solid,
-        label: false,
-      })),
+      ...(showLegLines
+        ? (selectedStrategy?.legs ?? []).map((leg) => ({
+            title: '',
+            value: leg.strike,
+            color: leg.action === 'buy' ? '#12803c' : '#d93535',
+            style: LineStyle.Solid,
+            label: false,
+          }))
+        : []),
     ].filter(
       (item): item is { title: string; value: number; color: string; style: LineStyle; label: boolean } =>
         typeof item.value === 'number',
@@ -152,23 +157,25 @@ export function UnderlyingPriceChart({
     if (selectedStrategy && em && lastCandle && em.dte > 0) {
       const anchorPrice = lastCandle.close
       const expiry = expiryTime(lastCandle.time, selectedStrategy.legs[0]?.expiration) ?? shiftTime(lastCandle.time, em.dte)
-      for (const line of [
-        { value: em.high, color: 'rgba(22, 163, 74, 0.26)' },
-        { value: em.low, color: 'rgba(220, 38, 38, 0.26)' },
-      ]) {
-        const emLine = chart.addSeries(LineSeries, {
-          color: line.color,
-          lineStyle: LineStyle.Dashed,
-          lineWidth: 1,
-          title: '',
-          lastValueVisible: false,
-          priceLineVisible: false,
-          crosshairMarkerVisible: false,
-        })
-        emLine.setData([
-          { time: lastCandle.time, value: anchorPrice },
-          { time: expiry, value: line.value },
-        ])
+      if (showEmLines) {
+        for (const line of [
+          { value: em.high, color: 'rgba(22, 163, 74, 0.26)' },
+          { value: em.low, color: 'rgba(220, 38, 38, 0.26)' },
+        ]) {
+          const emLine = chart.addSeries(LineSeries, {
+            color: line.color,
+            lineStyle: LineStyle.Dashed,
+            lineWidth: 1,
+            title: '',
+            lastValueVisible: false,
+            priceLineVisible: false,
+            crosshairMarkerVisible: false,
+          })
+          emLine.setData([
+            { time: lastCandle.time, value: anchorPrice },
+            { time: expiry, value: line.value },
+          ])
+        }
       }
 
       const expiryProjection = buildSimulatorChartProjection({
@@ -193,27 +200,29 @@ export function UnderlyingPriceChart({
         }))
 
       const none = 'rgba(0,0,0,0)'
-      for (const zone of expiryProjection.zones) {
-        const low = Math.min(zone.fromPrice, zone.toPrice)
-        const high = Math.max(zone.fromPrice, zone.toPrice)
-        if (high <= low) continue
-        const isProfit = zone.status === 'profit'
-        const color1 = isProfit ? 'rgba(22, 163, 74, 0.12)' : 'rgba(220, 38, 38, 0.12)'
-        const color2 = isProfit ? 'rgba(22, 163, 74, 0.06)' : 'rgba(220, 38, 38, 0.06)'
-        const band = chart.addSeries(BaselineSeries, {
-          baseValue: { type: 'price' as const, price: low },
-          topFillColor1: color1,
-          topFillColor2: color2,
-          bottomFillColor1: none,
-          bottomFillColor2: none,
-          topLineColor: none,
-          bottomLineColor: none,
-          lineVisible: false,
-          lastValueVisible: false,
-          priceLineVisible: false,
-          crosshairMarkerVisible: false,
-        })
-        band.setData(flatBars(high))
+      if (showPayoffZones) {
+        for (const zone of expiryProjection.zones) {
+          const low = Math.min(zone.fromPrice, zone.toPrice)
+          const high = Math.max(zone.fromPrice, zone.toPrice)
+          if (high <= low) continue
+          const isProfit = zone.status === 'profit'
+          const color1 = isProfit ? 'rgba(22, 163, 74, 0.12)' : 'rgba(220, 38, 38, 0.12)'
+          const color2 = isProfit ? 'rgba(22, 163, 74, 0.06)' : 'rgba(220, 38, 38, 0.06)'
+          const band = chart.addSeries(BaselineSeries, {
+            baseValue: { type: 'price' as const, price: low },
+            topFillColor1: color1,
+            topFillColor2: color2,
+            bottomFillColor1: none,
+            bottomFillColor2: none,
+            topLineColor: none,
+            bottomLineColor: none,
+            lineVisible: false,
+            lastValueVisible: false,
+            priceLineVisible: false,
+            crosshairMarkerVisible: false,
+          })
+          band.setData(flatBars(high))
+        }
       }
     }
 
@@ -243,7 +252,7 @@ export function UnderlyingPriceChart({
       chartRef.current = null
       seriesRef.current = null
     }
-  }, [market, selectedStrategy])
+  }, [market, selectedStrategy, showEmLines, showLegLines, showPayoffZones])
 
   // Simulator: thin dashed line at simulated price (no axis label to avoid confusion)
   useEffect(() => {
@@ -288,6 +297,13 @@ export function UnderlyingPriceChart({
             : money(selectedStrategy?.breakeven)}
         </span>
         {selectedStrategy?.expectedMove && <span>到期区域 绿=盈利 红=亏损</span>}
+        {selectedStrategy && (
+          <div className="chart-toggles">
+            <button className={showPayoffZones ? 'active' : ''} type="button" onClick={() => setShowPayoffZones((v) => !v)}>盈亏区</button>
+            <button className={showEmLines ? 'active' : ''} type="button" onClick={() => setShowEmLines((v) => !v)}>EM</button>
+            <button className={showLegLines ? 'active' : ''} type="button" onClick={() => setShowLegLines((v) => !v)}>行权价</button>
+          </div>
+        )}
         {simulatorProjection && (
           <span className={simulatorProjection.point.estimatedPnL >= 0 ? 'profit' : 'loss'}>
             模拟 {money(simulatorProjection.point.underlyingPrice)}{' '}

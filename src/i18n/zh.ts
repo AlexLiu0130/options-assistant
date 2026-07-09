@@ -183,6 +183,7 @@ export const zh: Translations = {
     placeholder: '输入支持的美股代码，例如 NVDA / MU / SPY',
     cta: '开始使用',
     unsupported: (ticker: string) => `${ticker} 暂不在当前 Qveris 期权标的池内。目前先支持 100 只高期权成交量个股和 20 只 ETF。`,
+    universeNote: '当前支持 100 只高期权成交量美股和 20 只 ETF。',
     tryLabel: '试试',
     featMarket: '行情与期权链',
     featMarketDesc: 'K 线、预期波动与完整期权链，一屏看清。',

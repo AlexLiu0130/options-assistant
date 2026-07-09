@@ -191,6 +191,7 @@ export const en = {
     placeholder: 'Enter a supported US ticker, e.g. NVDA / MU / SPY',
     cta: 'Get started',
     unsupported: (ticker: string) => `${ticker} is not in the current Qveris options universe. We support 100 high-volume stocks and 20 ETFs for now.`,
+    universeNote: 'Currently supports 100 high-option-volume US stocks and 20 ETFs.',
     tryLabel: 'Try',
     featMarket: 'Market & Option Chain',
     featMarketDesc: 'Candles, expected move, and a full options chain on one screen.',

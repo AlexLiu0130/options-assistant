@@ -147,6 +147,7 @@ export function HomePage() {
             <button type="submit">{h.cta}</button>
           </form>
           {error ? <p className="home-search-error">{error}</p> : null}
+          <p className="home-universe-note">{h.universeNote}</p>
 
           <div className="home-quick home-anim" style={{ animationDelay: '240ms' }}>
             <span>{h.tryLabel}</span>

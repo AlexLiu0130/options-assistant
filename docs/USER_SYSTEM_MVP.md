@@ -1,299 +1,301 @@
-# User System MVP
+# 用户系统最小闭环设计
 
-## Objective
+## 一、目标
 
-Build the smallest closed loop for an invite-only test with about 20 users:
+为约 20 名体验用户建立最小可用闭环：
 
 ```text
-Admin invite -> User login -> 7-day trial -> Product usage -> Trial expiry -> Extension or replacement
+管理员邀请 → 用户登录 → 7 天体验 → 使用产品 → 体验到期 → 续期或更换体验用户
 ```
 
-The MVP should answer three questions:
+第一阶段只验证三个问题：
 
-1. Will users repeatedly use strategy recommendations, the simulator, and paper trading?
-2. Will users request continued access after the trial?
-3. Which users show enough engagement or willingness to pay for the next test cohort?
+1. 用户是否会持续使用策略推荐、盈亏模拟和模拟交易？
+2. 体验结束后，用户是否会主动申请继续使用？
+3. 哪些用户表现出较高使用意愿或付费意愿，适合进入下一轮测试？
 
-## Scope
+## 二、功能范围
 
-The first version includes:
+第一版包含：
 
-- Invite-only accounts.
-- Email link or email verification-code login.
-- A seven-calendar-day trial starting at the first successful login.
-- Server-side access checks for protected APIs.
-- Remaining-trial-time display.
-- Per-user paper accounts, orders, and positions.
-- Read-only expired state.
-- One-click continuation request.
-- A small admin user list with invite, extend, disable, and status controls.
-- Minimal product-usage events.
+- 邀请制账号，不开放自由注册。
+- 邮箱链接或邮箱验证码登录。
+- 首次成功登录后自动开启 7 个自然日体验。
+- 后端统一校验用户身份和体验资格。
+- 页面显示体验剩余时间。
+- 每位用户拥有独立的模拟账户、订单和持仓。
+- 体验到期后进入只读状态。
+- 用户可以申请继续体验。
+- 管理员可以邀请、续期和停用用户。
+- 记录少量必要的产品使用事件。
 
-The first version does not include:
+第一版不包含：
 
-- Public self-registration.
-- Payments, subscriptions, invoices, coupons, or pricing plans.
-- Social login.
-- Complex role-based access control.
-- Team or organization accounts.
-- Automated marketing email.
-- A full analytics platform.
+- 公开注册。
+- 支付、订阅、账单、优惠券和套餐。
+- 社交账号登录。
+- 复杂的角色权限系统。
+- 企业或团队账号。
+- 自动营销邮件。
+- 完整的数据分析平台。
 
-## Roles
+## 三、用户角色
 
-### Tester
+### 体验用户
 
-- Can use protected product features while access is active.
-- Can view previous paper positions after expiry.
-- Can request continued access.
+- 体验有效期内可以使用受保护的产品功能。
+- 到期后可以查看原有模拟持仓和历史记录。
+- 可以申请继续体验。
 
-### Admin
+### 管理员
 
-- Can invite a tester.
-- Can see trial status and last activity.
-- Can extend access by 7, 14, or 30 days.
-- Can disable access.
-- Can review continuation requests and notes.
+- 邀请体验用户。
+- 查看用户状态和最近活跃时间。
+- 延长 7、14 或 30 天体验时间。
+- 停用用户。
+- 查看继续体验申请和内部备注。
 
-## Access States
+## 四、用户状态
 
-| State | Meaning | Product access |
+| 状态 | 含义 | 可用功能 |
 | --- | --- | --- |
-| `invited` | Invitation created, first login not completed | Login only |
-| `trial_active` | Initial seven-day trial is active | Full test access |
-| `extended` | Admin granted additional time | Full test access |
-| `expired` | Access end time has passed | Read-only history and education |
-| `disabled` | Admin revoked access | Login and support message only |
-| `internal` | Team account | Full access without trial expiry |
+| `invited` | 已发送邀请，尚未完成首次登录 | 只能登录 |
+| `trial_active` | 初始 7 天体验有效 | 完整体验功能 |
+| `extended` | 管理员已延长体验 | 完整体验功能 |
+| `expired` | 体验已到期 | 只读历史和教学内容 |
+| `disabled` | 管理员已停用 | 只能登录并查看提示 |
+| `internal` | 内部团队账号 | 长期完整权限 |
 
-Payment can later add a `paid` grant without changing this state model.
+以后接入付费时，只需要新增 `paid` 类型的访问授权，不需要重做用户身份和权限结构。
 
-## Trial Rules
+## 五、体验规则
 
-- The trial starts at the first successful login, not when the invitation is sent.
-- The default duration is seven calendar days.
-- Expiry is determined by the backend using UTC timestamps.
-- Expired accounts keep their user and paper-trade data.
-- An extension creates a new access record; it does not overwrite access history.
-- The 20-person limit applies to active testers, not expired users.
-- An expired or disabled tester frees a test slot.
-- Accounts are never recycled between different people.
+- 体验期从首次成功登录开始，不从发送邀请开始。
+- 默认体验时间为 7 个自然日。
+- 到期时间由后端按照 UTC 时间计算。
+- 到期后不删除用户和模拟交易数据。
+- 续期时新增一条访问授权记录，不覆盖历史授权。
+- 20 人限制只计算当前有效的体验用户。
+- 到期或停用用户不再占用体验名额。
+- 不同用户之间不能循环共用同一个账号。
 
-## User Flow
+## 六、用户流程
 
-### Invitation And Activation
+### 邀请与激活
 
-1. Admin enters an email address.
-2. The system creates an invited user and sends a single-use login link.
-3. The user completes the first login.
-4. The backend creates a seven-day access grant.
-5. The user completes a short onboarding form and enters the trading page.
+1. 管理员录入用户邮箱。
+2. 系统创建待激活用户并发送一次性登录链接。
+3. 用户完成首次登录。
+4. 后端创建 7 天体验授权。
+5. 用户完成简短设置后进入交易页面。
 
-The onboarding form should only ask for information already used by the recommendation engine:
+首次设置只收集推荐引擎已经需要的信息：
 
-- Options experience level.
-- Typical maximum loss budget.
-- Whether assignment is acceptable.
+- 期权经验等级。
+- 通常可以接受的最大亏损预算。
+- 是否可以接受期权指派。
 
-### Active Trial
+### 体验期间
 
-The navigation shows the remaining trial time without interrupting normal use. The tester can:
+导航区域显示剩余体验时间，但不使用弹窗打断用户。体验用户可以：
 
-- Search supported tickers.
-- Load market data and option chains.
-- Generate and adjust strategy recommendations.
-- Use Qveris AI explanations.
-- Use the price/date simulator.
-- Create and manage paper positions.
-- Open the strategy education page.
+- 搜索支持的标的。
+- 加载行情和期权链。
+- 查看并调整策略推荐。
+- 使用 Qveris AI 解释。
+- 使用标的价格和日期模拟器。
+- 创建和管理模拟持仓。
+- 查看策略教学页面。
 
-### Expiry
+### 体验到期
 
-When access expires:
+到期后：
 
-- Market, option-chain, assistant, and paper-order write APIs return an access-expired response.
-- Historical paper positions remain readable.
-- The education page remains available.
-- The UI shows the expiry date and a `Request continued access` action.
-- Existing data is not deleted or reset.
+- 行情、期权链、AI 和模拟下单写入接口返回体验到期状态。
+- 原有模拟持仓和历史记录仍然可以查看。
+- 策略教学页面继续开放。
+- 页面明确显示到期时间和“申请继续体验”按钮。
+- 不删除或重置任何用户数据。
 
-### Continuation
+### 继续体验
 
-1. The tester submits a continuation request with an optional short note.
-2. The admin sees the request in the user list.
-3. The admin extends access, leaves the user expired, or disables the account.
-4. An approved extension takes effect immediately without a new account.
+1. 用户提交继续体验申请，可以填写一句简短说明。
+2. 管理员在用户列表中看到申请。
+3. 管理员选择续期、保持到期状态或停用账号。
+4. 续期通过后立即恢复功能，不需要重新创建账号。
 
-## Minimal Data Model
+## 七、最小数据模型
 
-### `users`
+### `users` 用户表
 
-| Field | Purpose |
+| 字段 | 用途 |
 | --- | --- |
-| `id` | Internal stable user ID |
-| `auth_subject` | ID from the authentication service |
-| `email` | Unique login email |
-| `display_name` | Optional display name |
-| `role` | `tester` or `admin` |
-| `status` | Current access state |
-| `first_login_at` | Trial activation timestamp |
-| `last_active_at` | Last authenticated product activity |
-| `continuation_requested_at` | Latest continuation request |
-| `admin_note` | Internal cohort and feedback note |
-| `created_at` | User creation timestamp |
+| `id` | 系统内部稳定用户 ID |
+| `auth_subject` | 身份认证服务提供的用户 ID |
+| `email` | 唯一登录邮箱 |
+| `display_name` | 用户昵称，可为空 |
+| `role` | `tester` 或 `admin` |
+| `status` | 当前用户状态 |
+| `first_login_at` | 首次登录时间 |
+| `last_active_at` | 最近一次产品活动时间 |
+| `continuation_requested_at` | 最近一次继续体验申请时间 |
+| `admin_note` | 管理员内部备注 |
+| `created_at` | 用户创建时间 |
 
-### `access_grants`
+### `access_grants` 访问授权表
 
-| Field | Purpose |
+| 字段 | 用途 |
 | --- | --- |
-| `id` | Grant ID |
-| `user_id` | Owner |
-| `kind` | `trial`, `extension`, `internal`, or future `paid` |
-| `starts_at` | Access start |
-| `ends_at` | Access end; nullable for internal users |
-| `created_by` | Admin or system actor |
-| `reason` | Invite, extension, or future payment reference |
-| `created_at` | Audit timestamp |
+| `id` | 授权记录 ID |
+| `user_id` | 所属用户 |
+| `kind` | `trial`、`extension`、`internal`，未来可增加 `paid` |
+| `starts_at` | 授权开始时间 |
+| `ends_at` | 授权结束时间，内部用户可以为空 |
+| `created_by` | 创建授权的管理员或系统 |
+| `reason` | 邀请、续期或未来的支付记录 |
+| `created_at` | 授权记录创建时间 |
 
-### `product_events`
+### `product_events` 产品事件表
 
-Only record events needed to evaluate the test:
+第一阶段只记录用于判断体验效果的事件：
 
-- `first_ticker_search`
-- `strategy_opened`
-- `simulator_used`
-- `paper_order_created`
-- `assistant_used`
-- `continuation_requested`
+- `first_ticker_search`：首次搜索标的。
+- `strategy_opened`：展开策略卡片。
+- `simulator_used`：使用盈亏模拟器。
+- `paper_order_created`：创建模拟订单。
+- `assistant_used`：使用 AI 助手。
+- `continuation_requested`：申请继续体验。
 
-Each event stores `user_id`, `event_name`, `created_at`, and small non-sensitive metadata. Do not store full assistant conversations in this table.
+每条事件只保存 `user_id`、`event_name`、`created_at` 和少量非敏感信息，不在该表中保存完整 AI 对话内容。
 
-### Paper Trading
+### 模拟交易数据
 
-The existing paper account, order, and position records must include `user_id`. The backend must always derive this ID from the authenticated session and must ignore any user ID supplied by the browser.
+现有模拟账户、订单和持仓记录必须关联 `user_id`。后端只能从登录会话中取得用户 ID，不能信任浏览器请求中传入的用户 ID。
 
-## Backend Access Boundary
+## 八、后端权限边界
 
-Authentication and access checks must be enforced in the backend. Hiding a frontend button is not authorization.
+身份和访问权限必须由后端校验。前端隐藏按钮不能代替权限控制。
 
-| Route group | Anonymous | Active tester | Expired tester | Admin |
+| 接口类型 | 未登录 | 有效体验用户 | 到期用户 | 管理员 |
 | --- | --- | --- | --- | --- |
-| Homepage, login, health | Yes | Yes | Yes | Yes |
-| Strategy education | Yes | Yes | Yes | Yes |
-| User profile and paper history read | No | Yes | Yes | Yes |
-| Market and option-chain data | No | Yes | No | Yes |
-| Assistant requests | No | Yes | No | Yes |
-| Paper order create/close/reset | No | Yes | No | Yes |
-| Continuation request | No | Yes | Yes | Yes |
-| User administration | No | No | No | Yes |
+| 首页、登录、健康检查 | 可以 | 可以 | 可以 | 可以 |
+| 策略教学 | 可以 | 可以 | 可以 | 可以 |
+| 用户信息和模拟历史读取 | 不可以 | 可以 | 可以 | 可以 |
+| 行情和期权链 | 不可以 | 可以 | 不可以 | 可以 |
+| AI 助手 | 不可以 | 可以 | 不可以 | 可以 |
+| 模拟下单、平仓和重置 | 不可以 | 可以 | 不可以 | 可以 |
+| 申请继续体验 | 不可以 | 可以 | 可以 | 可以 |
+| 用户管理 | 不可以 | 不可以 | 不可以 | 可以 |
 
-The access middleware should return stable error codes:
+权限中间件返回稳定错误码：
 
-- `AUTH_REQUIRED`
-- `ACCESS_EXPIRED`
-- `ACCESS_DISABLED`
-- `ACTIVE_TESTER_LIMIT_REACHED`
-- `ADMIN_REQUIRED`
+- `AUTH_REQUIRED`：需要登录。
+- `ACCESS_EXPIRED`：体验已到期。
+- `ACCESS_DISABLED`：账号已停用。
+- `ACTIVE_TESTER_LIMIT_REACHED`：有效体验人数已达到 20 人。
+- `ADMIN_REQUIRED`：需要管理员权限。
 
-## Minimal API Surface
+## 九、最小 API
 
-- `GET /api/auth/me`: session, profile, access state, and remaining time.
-- `POST /api/access/request-extension`: submit continuation request.
-- `GET /api/admin/users`: list testers and access status.
-- `POST /api/admin/invites`: invite one email.
-- `POST /api/admin/users/:id/extend`: add 7, 14, or 30 days.
-- `POST /api/admin/users/:id/disable`: revoke access.
+- `GET /api/auth/me`：返回用户信息、访问状态和剩余体验时间。
+- `POST /api/access/request-extension`：提交继续体验申请。
+- `GET /api/admin/users`：获取体验用户和访问状态。
+- `POST /api/admin/invites`：邀请一个邮箱。
+- `POST /api/admin/users/:id/extend`：延长 7、14 或 30 天。
+- `POST /api/admin/users/:id/disable`：停用用户。
 
-Existing protected APIs should use shared authentication and access middleware rather than adding checks independently in every route.
+现有受保护接口统一使用同一个身份和访问权限中间件，不在每个接口中重复编写判断逻辑。
 
-## Frontend Requirements
+## 十、前端要求
 
-### Login
+### 登录页面
 
-- Qveris branding.
-- Email input and login-link confirmation state.
-- Clear education/simulation disclaimer.
-- No pricing or subscription UI.
+- 使用 Qveris 品牌视觉。
+- 提供邮箱输入和登录链接发送成功状态。
+- 明确说明产品用于教学、研究和模拟。
+- 第一版不展示价格和订阅套餐。
 
-### Active Trial
+### 体验期间
 
-- Small `Trial: 6 days left` indicator in the account menu.
-- Account menu with email, expiry date, paper portfolio, and logout.
-- No blocking countdown modal.
+- 在账号菜单中显示“体验剩余 6 天”等轻量提示。
+- 账号菜单包含邮箱、到期时间、模拟持仓入口和退出登录。
+- 不使用强制弹窗倒计时。
 
-### Expired Trial
+### 到期状态
 
-- Clear expired state instead of generic API errors.
-- Read-only paper portfolio.
-- Education remains accessible.
-- One primary action: `Request continued access`.
+- 明确展示体验已到期，不显示普通 API 报错。
+- 模拟持仓保持只读。
+- 继续开放教学内容。
+- 页面只保留一个主要操作：“申请继续体验”。
 
-### Admin
+### 管理员页面
 
-A single table is sufficient:
+第一版只需要一个用户表格：
 
-- Email.
-- Status.
-- Trial start and end.
-- Remaining time.
-- Last active time.
-- Continuation request.
-- Extend and disable actions.
+- 邮箱。
+- 用户状态。
+- 体验开始和结束时间。
+- 剩余时间。
+- 最近活跃时间。
+- 是否申请继续体验。
+- 续期和停用操作。
 
-## Operational Limits For The Test
+## 十一、测试期运行限制
 
-- Maximum 20 active testers.
-- Continue sharing server-side quote and option-chain caches across users.
-- Keep current bounded Qveris/Theta concurrency controls.
-- Add a conservative per-user assistant request limit to prevent one tester from consuming the cohort budget.
-- Log access denials and upstream data failures without logging API keys or full private prompts.
+- 同时最多 20 名有效体验用户。
+- 实时股价和期权链继续使用服务端共享缓存，避免按用户重复请求。
+- 保留现有 Qveris/Theta 并发控制。
+- 设置较宽松的单用户 AI 调用上限，防止一个用户耗尽整个测试组额度。
+- 记录权限拒绝和上游数据错误，但不记录 API 密钥和完整私人对话。
 
-## Success Signals
+## 十二、需要观察的指标
 
-The MVP should report per user:
+每位用户只观察以下信息：
 
-- First login completed.
-- First supported ticker searched.
-- Number of active days during the trial.
-- Strategy card opened.
-- Simulator used.
-- Paper order created.
-- Assistant used.
-- Continuation requested.
-- Admin note on willingness to keep using or pay.
+- 是否完成首次登录。
+- 是否完成首次标的搜索。
+- 7 天内有多少个活跃日。
+- 是否展开策略卡片。
+- 是否使用模拟器。
+- 是否创建模拟订单。
+- 是否使用 AI 助手。
+- 是否申请继续体验。
+- 管理员记录的继续使用或付费意愿。
 
-No composite engagement score is needed for the first cohort. A small user table and CSV export are enough.
+第一批用户不需要计算复杂的活跃分数。管理员用户表加 CSV 导出已经足够。
 
-## Acceptance Criteria
+## 十三、验收标准
 
-- An invited user can log in and receives exactly seven days of access from first login.
-- A non-invited user cannot create an account.
-- The backend rejects protected requests from anonymous, expired, or disabled users.
-- Two testers cannot read or modify each other's paper data.
-- Expiry does not delete paper positions or account history.
-- An expired tester can request continued access.
-- An admin can extend access and the tester can immediately resume using protected features.
-- The system prevents more than 20 simultaneously active tester grants.
-- All timestamps and access decisions come from the backend.
-- Existing engine, paper-trade, build, and lint checks continue to pass.
+- 被邀请用户可以登录，并从首次登录开始获得完整 7 天体验。
+- 未被邀请的邮箱不能自行注册账号。
+- 后端拒绝未登录、已到期或已停用用户访问受保护接口。
+- 两名体验用户不能读取或修改对方的模拟交易数据。
+- 体验到期不会删除模拟持仓和账户历史。
+- 到期用户可以申请继续体验。
+- 管理员续期后，用户可以立即恢复受保护功能。
+- 系统不能同时创建超过 20 个有效体验授权。
+- 所有时间和权限判断以服务器为准。
+- 原有计算引擎、模拟交易、构建和代码检查继续通过。
 
-## Implementation Order
+## 十四、实现顺序
 
-1. Add managed email authentication and server-side session validation.
-2. Add `users` and `access_grants` persistence plus shared access middleware.
-3. Bind paper-trade storage to the authenticated user.
-4. Add login, account status, and expired-state UI.
-5. Add the minimal admin user table.
-6. Add the six product events and continuation request.
-7. Run an internal test with two accounts before inviting the first cohort.
+1. 接入托管邮箱登录，并在服务器验证登录会话。
+2. 建立 `users` 和 `access_grants` 存储以及统一权限中间件。
+3. 将模拟交易数据绑定到当前登录用户。
+4. 增加登录、账号状态和体验到期界面。
+5. 增加最小管理员用户表。
+6. 增加六个产品事件和继续体验申请。
+7. 使用两个内部账号完整测试后，再邀请第一批体验用户。
 
-## Deferred Until Evidence Exists
+## 十五、暂缓内容
 
-- Payment provider integration.
-- Pricing tiers and feature packaging.
-- Automated renewals.
-- Referral or public registration.
-- Complex analytics dashboards.
-- Multiple organizations or team permissions.
+在获得真实用户证据前，不开发以下内容：
 
-The entitlement model already leaves room for these additions without changing the initial user identity or paper-trade ownership model.
+- 支付接口。
+- 套餐和功能分层。
+- 自动续费。
+- 推荐邀请和公开注册。
+- 复杂的数据分析看板。
+- 企业组织和团队权限。
+
+当前访问授权模型已经为这些功能保留扩展位置，未来可以直接增加新的授权类型，不需要更改用户身份和模拟交易归属结构。

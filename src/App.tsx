@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   ArrowDownRight,
@@ -18,10 +18,7 @@ import { AssistantExplanationPanel } from './components/AssistantExplanationPane
 import { AssistantBot } from './components/AssistantBot'
 import { HomePage } from './components/HomePage'
 import { OptionChainTable } from './components/OptionChainTable'
-import { PaperPortfolioPage } from './components/PaperPortfolioPage'
 import { StrategyCard } from './components/StrategyCard'
-import { StrategyEducationPage } from './components/StrategyEducationPage'
-import { UnderlyingPriceChart } from './components/UnderlyingPriceChart'
 import type { AssistantStructuredUpdates } from './core/assistantPolicy'
 import type { ActiveSimulatorState } from './core/simulatorChartEngine'
 import { optionExpirations } from './core/dashboardData'
@@ -33,6 +30,16 @@ import { useT } from './i18n'
 import type { QverisMarketSnapshot, QverisOptionsResponse } from './types/optionTypes'
 import type { Direction, ExperienceLevel, StrategyCandidate, Strength } from './types/strategyTypes'
 import './App.css'
+
+const PaperPortfolioPage = lazy(() =>
+  import('./components/PaperPortfolioPage').then((module) => ({ default: module.PaperPortfolioPage })),
+)
+const StrategyEducationPage = lazy(() =>
+  import('./components/StrategyEducationPage').then((module) => ({ default: module.StrategyEducationPage })),
+)
+const UnderlyingPriceChart = lazy(() =>
+  import('./components/UnderlyingPriceChart').then((module) => ({ default: module.UnderlyingPriceChart })),
+)
 
 function useHash() {
   const [hash, setHash] = useState(() => window.location.hash)
@@ -228,6 +235,7 @@ function normalizeExperience(value?: string): ExperienceLevel | undefined {
 }
 
 function App() {
+  const { t } = useT()
   const hash = useHash()
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try { return localStorage.getItem('qveris-theme') === 'dark' ? 'dark' : 'light' } catch { return 'light' }
@@ -238,10 +246,10 @@ function App() {
   }, [theme])
   const toggleTheme = () => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))
   if (hash === '#/paper') {
-    return <PaperPortfolioPage theme={theme} onToggleTheme={toggleTheme} />
+    return <Suspense fallback={<div className="app-loading">{t.builder.pending}</div>}><PaperPortfolioPage theme={theme} onToggleTheme={toggleTheme} /></Suspense>
   }
   if (hash === '#/learn') {
-    return <StrategyEducationPage theme={theme} onToggleTheme={toggleTheme} />
+    return <Suspense fallback={<div className="app-loading">{t.builder.pending}</div>}><StrategyEducationPage theme={theme} onToggleTheme={toggleTheme} /></Suspense>
   }
   if (hash.startsWith('#/trade')) {
     const params = new URLSearchParams(hash.split('?')[1] ?? '')
@@ -560,12 +568,14 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
           <DataStatusChips market={market} options={options} lang={lang} pulseKey={dataPulse} />
 
           <section className="oa-chart-card">
-            <UnderlyingPriceChart
-              market={chartMarket}
-              isLoadingCandles={!chartMarket && !market.error}
-              selectedStrategy={selectedStrategy}
-              simulatorProjection={selectedProjection}
-            />
+            <Suspense fallback={<div className="chart-skeleton" aria-label={t.chart.loadingCandles} />}>
+              <UnderlyingPriceChart
+                market={chartMarket}
+                isLoadingCandles={!chartMarket && !market.error}
+                selectedStrategy={selectedStrategy}
+                simulatorProjection={selectedProjection}
+              />
+            </Suspense>
           </section>
 
           <div className="chain-toolbar">

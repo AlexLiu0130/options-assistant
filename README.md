@@ -26,8 +26,6 @@ This product is for research, education, and simulation only. It does not place 
 
 - React + Vite + TypeScript
 - Lightweight Charts
-- Ant Design Charts
-- AG Grid Community
 - Lucide React
 - Node local API server
 
@@ -56,6 +54,8 @@ npm run lint
 npm run build
 npm run check:engines
 npm run check:paper
+# or run all checks
+npm run check
 ```
 
 ## Data Boundary
@@ -65,3 +65,10 @@ Real market and options data should flow through Qveris-facing backend routes. A
 ## Risk Boundary
 
 The assistant must explain assumptions, uncertainty, max loss, liquidity risk, expiration risk, and event risk. Outputs are decision support and education, not financial advice.
+
+## Project References
+
+- [Code map](CODE_MAP.md)
+- [Reusable assets](docs/REUSABLE_ASSETS.md)
+- [Completion audit](docs/PROJECT_AUDIT_2026-07-10.md)
+- [Deployment handoff](DEPLOYMENT_HANDOFF.md)

@@ -8,7 +8,7 @@ import { buildSimulatorChartProjection } from '../src/core/simulatorChartEngine.
 import { simulateStrategy, strategyTheoreticalValue } from '../src/core/simulatorEngine.ts'
 import { buildGreeksQuadChart } from '../src/core/greeksChartEngine.ts'
 import { adjustStrategyLegs } from '../src/core/strategyAdjustmentEngine.ts'
-import { recommendStrategyTypes } from '../src/core/strategyRecommendationEngine.ts'
+import { probabilityOfProfit, recommendStrategyTypes } from '../src/core/strategyRecommendationEngine.ts'
 import { optionExpirations } from '../src/core/dashboardData.ts'
 import { buildAssistantPlan, enforceAgentResponse } from '../server/assistantAgent.mjs'
 import type { QverisOptionContract, QverisOptionsResponse } from '../src/types/optionTypes.ts'
@@ -23,6 +23,12 @@ const spread: StrategyLeg[] = [
   { action: 'sell', right: 'call', strike: 110, expiration: '2026-07-17', quantity: 1, premium: 2, impliedVolatility: 0.25 },
 ]
 assert.equal(strategyExpirationPayoff(spread, 120), 700)
+assert.ok((probabilityOfProfit([
+  { action: 'buy', right: 'call', strike: 200, expiration: '2027-07-17', quantity: 1, premium: 1 },
+], 100, 1, 365) ?? 0) > 0)
+assert.ok((probabilityOfProfit([
+  { action: 'buy', right: 'put', strike: 40, expiration: '2027-07-17', quantity: 1, premium: 1 },
+], 100, 1, 365) ?? 0) > 0)
 
 const condor: StrategyLeg[] = [
   { action: 'buy', right: 'put', strike: 90, expiration: '2026-07-17', quantity: 1, premium: 0.5 },

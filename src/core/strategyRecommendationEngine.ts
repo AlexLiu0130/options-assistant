@@ -82,19 +82,39 @@ function probabilityBetween(low: number, high: number, spot: number, iv: number,
 }
 
 export function probabilityOfProfit(legs: StrategyLeg[], spot: number, iv: number, dte: number) {
-  if (!legs.length) return undefined
-  const low = spot * 0.45
-  const high = spot * 1.75
-  const steps = 220
+  if (!legs.length || spot <= 0 || iv <= 0 || dte <= 0) return undefined
+  const strikes = [...new Set(legs.map((item) => item.strike).filter((strike) => strike > 0))].sort((a, b) => a - b)
+  if (!strikes.length) return undefined
   let probability = 0
-  let previous = low
-  for (let index = 1; index <= steps; index += 1) {
-    const price = low + ((high - low) * index) / steps
-    const midpoint = (previous + price) / 2
-    if (strategyPayoff(legs, midpoint) > 0) {
-      probability += probabilityBetween(previous, price, spot, iv, dte)
+  const boundaries = [0, ...strikes]
+  for (let index = 0; index < boundaries.length - 1; index += 1) {
+    const low = boundaries[index]
+    const high = boundaries[index + 1]
+    const lowPayoff = strategyPayoff(legs, low)
+    const highPayoff = strategyPayoff(legs, high)
+    if (lowPayoff > 0 && highPayoff > 0) {
+      probability += probabilityBetween(low, high, spot, iv, dte)
+    } else if ((lowPayoff > 0) !== (highPayoff > 0)) {
+      const root = low + ((0 - lowPayoff) * (high - low)) / (highPayoff - lowPayoff)
+      probability += lowPayoff > 0
+        ? probabilityBetween(low, root, spot, iv, dte)
+        : probabilityBetween(root, high, spot, iv, dte)
     }
-    previous = price
+  }
+
+  const tailStart = strikes.at(-1) ?? 0
+  const tailPayoff = strategyPayoff(legs, tailStart)
+  const tailSlope = legs
+    .filter((item) => item.right === 'call')
+    .reduce((sum, item) => sum + (item.action === 'buy' ? 1 : -1) * item.quantity * multiplier, 0)
+  if (tailSlope === 0 && tailPayoff > 0) {
+    probability += 1 - lognormalCdf(tailStart, spot, iv, dte)
+  } else if (tailSlope > 0) {
+    const root = tailPayoff > 0 ? tailStart : tailStart - tailPayoff / tailSlope
+    probability += 1 - lognormalCdf(root, spot, iv, dte)
+  } else if (tailPayoff > 0) {
+    const root = tailStart - tailPayoff / tailSlope
+    probability += probabilityBetween(tailStart, root, spot, iv, dte)
   }
   return Number((probability * 100).toFixed(1))
 }
@@ -410,7 +430,7 @@ function educationCandidate(
 
 function hasUsableStrikeCoverage(strategy: StrategyCandidate, view: ParsedView) {
   if (!strategy.legs.length) return true
-  return strategy.legs.some((leg) => leg.strike >= view.current_price * 0.5 && leg.strike <= view.current_price * 1.5)
+  return strategy.legs.every((leg) => leg.strike >= view.current_price * 0.5 && leg.strike <= view.current_price * 1.5)
 }
 
 function legContracts(strategy: StrategyCandidate, options?: QverisOptionsResponse) {

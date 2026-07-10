@@ -18,6 +18,7 @@ deploy/*.env
 .claude/
 .cache/
 .qveris-paper-trades.json
+marketing/
 
 # Reference PDFs and extracted book assets stay local
 book/

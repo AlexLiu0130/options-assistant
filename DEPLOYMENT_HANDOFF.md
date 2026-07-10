@@ -29,13 +29,24 @@ Optional runtime variables currently supported:
 
 ```bash
 QVERIS_BASE_URL=
-DEEPSEEK_BASE_URL=
-DEEPSEEK_MODEL=
 QVERIS_SESSION_ID=
-API_PORT=
 QVERIS_REFRESH_MS=
+QVERIS_QUOTE_REFRESH_MS=
+QVERIS_MARKET_REFRESH_MS=
+QVERIS_OPTIONS_REFRESH_MS=
+QVERIS_OPEN_INTEREST_CACHE_MS=
 QVERIS_CLOSED_CACHE_MS=
 QVERIS_HEAVY_CONCURRENCY=
+QVERIS_PREWARM_ENABLED=
+QVERIS_PREWARM_INTERVAL_MS=
+QVERIS_PREWARM_SYMBOLS=
+DEEPSEEK_BASE_URL=
+DEEPSEEK_MODEL=
+API_HOST=
+API_PORT=
+CORS_ORIGIN=
+PAPER_TRADE_STORE_PATH=
+SERVE_STATIC=
 ```
 
 ## Deployment Blockers
@@ -78,15 +89,15 @@ The backend is currently a local prototype server.
 
 Before deployment, review:
 
-- It binds to `127.0.0.1`.
-- CORS is hard-coded to `http://localhost:5173`.
+- `API_HOST` and `CORS_ORIGIN` must match the deployed network and domain.
 - There is no production request logging policy.
 - There is no server-side rate limiting.
 - There is no request size limit.
 - There is no centralized error reporting.
-- There is no deployment process manager configuration.
-- There is no Dockerfile or server deployment manifest.
 - `/api/health` exists, but no deeper dependency health check exists.
+
+The repository includes a Docker image, Compose manifests, nginx proxy configuration,
+and a manual GHCR build workflow under `deploy/` and `.github/workflows/`.
 
 ### Frontend Production Wiring
 
@@ -170,15 +181,8 @@ Before deployment, confirm the final supported US stocks and ETFs list.
 Current local checks:
 
 ```bash
-npm run lint
-npm run build
-npm run check:engines
-npm run check:paper
+npm run check
 ```
-
-Known non-blocking warning:
-
-- `src/i18n/index.tsx` has an oxlint Fast Refresh warning because it exports shared values from a React module.
 
 ## Suggested Deployment Readiness Checklist
 
@@ -186,9 +190,9 @@ Known non-blocking warning:
 - [ ] Add backend auth/session validation.
 - [ ] Replace local paper-trade file storage.
 - [ ] Configure production API URL/reverse proxy.
-- [ ] Replace hard-coded CORS origin.
+- [ ] Configure production host and CORS origin.
 - [ ] Configure secret management.
-- [ ] Add process manager or container setup.
+- [x] Add container and reverse-proxy setup.
 - [ ] Add production logs and error monitoring.
 - [ ] Add rate limiting.
 - [ ] Add request body limits.

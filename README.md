@@ -71,4 +71,5 @@ The assistant must explain assumptions, uncertainty, max loss, liquidity risk, e
 - [Code map](CODE_MAP.md)
 - [Reusable assets](docs/REUSABLE_ASSETS.md)
 - [Completion audit](docs/PROJECT_AUDIT_2026-07-10.md)
+- [User-system MVP](docs/USER_SYSTEM_MVP.md)
 - [Deployment handoff](DEPLOYMENT_HANDOFF.md)

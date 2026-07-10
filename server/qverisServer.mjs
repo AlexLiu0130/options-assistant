@@ -487,6 +487,15 @@ function mergeLiveQuoteCandle(candles, quote, kind) {
     ? new Date(last.time * 1000).toISOString().slice(0, 10)
     : String(last?.time ?? '').slice(0, 10)
   const liveTime = kind === 'daily' ? liveDate : quote.timestamp
+  const lastTime = typeof last?.time === 'number'
+    ? last.time
+    : Math.floor(Date.parse(`${String(last?.time ?? '')}T00:00:00Z`) / 1000)
+
+  // Some after-hours quote providers return the prior close timestamp while
+  // historical bars already include later extended-hours candles. Never move
+  // the final candle backwards: lightweight-charts requires ascending times.
+  if (Number.isFinite(lastTime) && quote.timestamp < lastTime) return copy
+
   const fullDayCandle = {
     time: liveTime,
     open: quote.open ?? quote.price,
@@ -502,13 +511,13 @@ function mergeLiveQuoteCandle(candles, quote, kind) {
   }
   const intervalCandle = {
     time: liveTime,
-    open: lastDate === liveDate ? (last?.open ?? quote.price) : (last?.close ?? quote.open ?? quote.price),
-    high: Math.max(lastDate === liveDate ? (last?.high ?? quote.price) : (quote.open ?? quote.price), quote.price),
-    low: Math.min(lastDate === liveDate ? (last?.low ?? quote.price) : (quote.open ?? quote.price), quote.price),
+    open: quote.timestamp === lastTime ? (last?.open ?? quote.price) : quote.price,
+    high: quote.timestamp === lastTime ? Math.max(last?.high ?? quote.price, quote.price) : quote.price,
+    low: quote.timestamp === lastTime ? Math.min(last?.low ?? quote.price, quote.price) : quote.price,
     close: quote.price,
-    volume: lastDate === liveDate ? (last?.volume ?? null) : null,
+    volume: quote.timestamp === lastTime ? (last?.volume ?? null) : null,
   }
-  if (lastDate === liveDate) copy[copy.length - 1] = { ...last, ...intervalCandle }
+  if (quote.timestamp === lastTime) copy[copy.length - 1] = { ...last, ...intervalCandle }
   else copy.push(intervalCandle)
   return copy
 }

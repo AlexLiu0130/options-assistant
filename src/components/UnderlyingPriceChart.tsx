@@ -9,6 +9,18 @@ import type { StrategyCandidate } from '../types/strategyTypes'
 
 const CHART_HEIGHT = 390
 
+function orderedCandles(market?: QverisMarketSnapshot) {
+  const byTime = new Map<string | number, ReturnType<typeof marketCandles>[number]>()
+  for (const candle of marketCandles(market)) {
+    if (![candle.open, candle.high, candle.low, candle.close].every(Number.isFinite)) continue
+    byTime.set(candle.time, candle)
+  }
+  return [...byTime.values()].sort((a, b) => {
+    if (typeof a.time === 'number' && typeof b.time === 'number') return a.time - b.time
+    return String(a.time).localeCompare(String(b.time))
+  })
+}
+
 function formatChartTime(time: string | number) {
   if (typeof time === 'number') {
     return new Intl.DateTimeFormat('zh-CN', {
@@ -60,7 +72,7 @@ export function UnderlyingPriceChart({
 
   useEffect(() => {
     if (!ref.current) return
-    const candlesData = marketCandles(market).map((candle) => ({
+    const candlesData = orderedCandles(market).map((candle) => ({
       ...candle,
       time: typeof candle.time === 'number' ? (candle.time as UTCTimestamp) : candle.time,
     }))

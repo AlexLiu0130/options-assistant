@@ -1,7 +1,12 @@
 # Internal Docker Deployment
 
-This deployment layout is for internal server use. It does not add product login,
-multi-user persistence, or public compliance controls.
+This deployment layout is for internal server use. Product login is provided by
+the QVeris OAuth confidential Web client in the application backend. Configure
+the exact production callback, Account Resource, client secret, and session
+secret in `deploy/service.env`.
+Paper-trading state is persisted per authenticated QVeris user. This internal
+deployment still requires production review for horizontal scaling and public
+compliance controls.
 
 ## Files
 
@@ -25,7 +30,8 @@ The service compose file creates the shared `options-assistant-net` network.
 Start it before the proxy compose file.
 
 For internal use, restrict access with cloud firewall rules, VPN, private network
-ingress, or a fronting gateway. The application itself does not yet include login.
+ingress, or a fronting gateway. OAuth login controls application access; network
+restrictions remain necessary while the product is in private beta.
 
 ## Checks
 

@@ -21,6 +21,7 @@ import {
   PREWARM_SYMBOLS,
   supportedUniversePayload,
 } from './supportedUnderlyings.mjs'
+import { createAuthRuntime } from './auth.mjs'
 
 const envPath = new URL('../.env.local', import.meta.url)
 if (existsSync(envPath)) {
@@ -47,6 +48,17 @@ const openInterestCacheMs = Number(process.env.QVERIS_OPEN_INTEREST_CACHE_MS || 
 const heavyLimit = Number(process.env.QVERIS_HEAVY_CONCURRENCY || 4)
 const prewarmEnabled = process.env.QVERIS_PREWARM_ENABLED !== 'false'
 const prewarmIntervalMs = Number(process.env.QVERIS_PREWARM_INTERVAL_MS || 15000)
+const authBaseUrl = String(process.env.QVERIS_AUTH_BASE_URL || 'https://qveris.ai').replace(/\/$/, '')
+const authRuntime = createAuthRuntime({
+  authBaseUrl,
+  clientId: process.env.QVERIS_OAUTH_CLIENT_ID || '',
+  clientSecret: process.env.QVERIS_OAUTH_CLIENT_SECRET || '',
+  sessionSecret: process.env.QVERIS_OAUTH_SESSION_SECRET || '',
+  redirectUri: process.env.QVERIS_OAUTH_REDIRECT_URI || `http://${host}:${port}/auth/callback`,
+  resource: process.env.QVERIS_OAUTH_RESOURCE || `${authBaseUrl}/account`,
+  scopes: process.env.QVERIS_OAUTH_SCOPES || 'openid profile email',
+  secureCookie: process.env.QVERIS_OAUTH_SECURE_COOKIE === 'true',
+})
 const prewarmSymbols = String(process.env.QVERIS_PREWARM_SYMBOLS || PREWARM_SYMBOLS.join(','))
   .split(',')
   .map((symbol) => tickerFromPath(symbol, ''))
@@ -259,7 +271,7 @@ function startPrewarm(origin) {
     const symbol = prewarmSymbols[prewarmCursor++ % prewarmSymbols.length]
     if (prewarmInflight.has(symbol) || cached(optionsCache, 'options', `${symbol}:open`)) return
     prewarmInflight.add(symbol)
-    fetch(`${origin}/api/options/${symbol}?live=1`)
+    fetch(`${origin}/api/options/${symbol}?live=1`, { headers: { 'x-options-internal-token': authRuntime.internalToken } })
       .catch(() => {})
       .finally(() => prewarmInflight.delete(symbol))
   }, prewarmIntervalMs)
@@ -824,19 +836,25 @@ async function handle(req, res) {
   try {
     if (req.method === 'OPTIONS') return json(res, 204, {})
     const url = new URL(req.url || '/', `http://${req.headers.host}`)
+    if (await authRuntime.handle(req, res, url, json)) return
     if (url.pathname === '/api/health') return json(res, 200, { ok: true })
+
+    const authUser = authRuntime.currentUser(req)
+    if (url.pathname.startsWith('/api/') && !authUser) {
+      return json(res, 401, { error: 'Authentication required.' })
+    }
 
     if (url.pathname === '/api/supported-underlyings') {
       return json(res, 200, supportedUniversePayload())
     }
 
     if (url.pathname === '/api/paper/orders' && req.method === 'POST') {
-      const result = submitPaperOrder(await readJson(req))
+      const result = submitPaperOrder(await readJson(req), Date.now(), authUser.sub)
       return json(res, result.status, result.body)
     }
 
     if (url.pathname === '/api/paper/orders' && req.method === 'GET') {
-      const result = listPaperOrders()
+      const result = listPaperOrders(authUser.sub)
       return json(res, result.status, result.body)
     }
 
@@ -844,17 +862,17 @@ async function handle(req, res) {
       const result = getPaperAccount({
         currentUnderlyingPrice: url.searchParams.get('currentUnderlyingPrice') ?? url.searchParams.get('currentPrice'),
         prices: parseJsonQuery(url.searchParams.get('prices')),
-      })
+      }, Date.now(), authUser.sub)
       return json(res, result.status, result.body)
     }
 
     if (url.pathname === '/api/paper/account/mark' && req.method === 'POST') {
-      const result = getPaperAccount(await readJson(req))
+      const result = getPaperAccount(await readJson(req), Date.now(), authUser.sub)
       return json(res, result.status, result.body)
     }
 
     if (url.pathname === '/api/paper/account/reset' && req.method === 'POST') {
-      const result = resetPaperAccount(await readJson(req))
+      const result = resetPaperAccount(await readJson(req), Date.now(), authUser.sub)
       return json(res, result.status, result.body)
     }
 
@@ -862,13 +880,13 @@ async function handle(req, res) {
       const result = listPaperPositions({
         status: url.searchParams.get('status') || 'open',
         currentUnderlyingPrice: url.searchParams.get('currentUnderlyingPrice') ?? url.searchParams.get('currentPrice'),
-      })
+      }, authUser.sub)
       return json(res, result.status, result.body)
     }
 
     const closeMatch = url.pathname.match(/^\/api\/paper\/positions\/([^/]+)\/close$/)
     if (closeMatch && req.method === 'POST') {
-      const result = closePaperPositionById(decodeURIComponent(closeMatch[1]), await readJson(req))
+      const result = closePaperPositionById(decodeURIComponent(closeMatch[1]), await readJson(req), Date.now(), authUser.sub)
       return json(res, result.status, result.body)
     }
 

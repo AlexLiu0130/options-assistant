@@ -12,6 +12,7 @@
     "calc:strategies": "node scripts/calculateStrategies.mjs",
     "check:engines": "node --experimental-strip-types --experimental-specifier-resolution=node scripts/engineSelfCheck.ts",
     "check:paper": "node scripts/paperTradeRuntimeSmoke.mjs",
+    "check:auth": "node scripts/authRuntimeSmoke.mjs",
     "python:deps": "python3 -m pip install -r requirements.txt",
     "ibkr:options": "python3 scripts/fetchIbkrOptions.py",
     "smoke:live": "node scripts/liveSmoke.mjs",

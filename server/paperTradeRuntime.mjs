@@ -10,8 +10,7 @@ import {
 const storePath =
   process.env.PAPER_TRADE_STORE_PATH ||
   fileURLToPath(new URL('../.qveris-paper-trades.json', import.meta.url))
-const userId = 'local-user'
-const accountId = 'local-paper'
+const legacyUserId = 'local-user'
 const defaultInitialCash = 1_000_000
 
 function isoNow(now = Date.now()) {
@@ -22,9 +21,9 @@ function roundMoney(value) {
   return Number(value.toFixed(2))
 }
 
-function defaultAccount(now = Date.now()) {
+function defaultAccount(now = Date.now(), userId = legacyUserId) {
   return {
-    id: accountId,
+    id: `paper-${userId}`,
     userId,
     currency: 'USD',
     initialCash: defaultInitialCash,
@@ -33,23 +32,31 @@ function defaultAccount(now = Date.now()) {
   }
 }
 
-function readStore() {
-  if (!existsSync(storePath)) return { account: defaultAccount(), orders: [], positions: [] }
+function readRootStore() {
+  if (!existsSync(storePath)) return { accounts: {} }
   try {
     const parsed = JSON.parse(readFileSync(storePath, 'utf8'))
-    const store = {
+    if (parsed.accounts && typeof parsed.accounts === 'object') return parsed
+    const legacy = {
       orders: Array.isArray(parsed.orders) ? parsed.orders : [],
       positions: Array.isArray(parsed.positions) ? parsed.positions : [],
       account: parsed.account && typeof parsed.account === 'object' ? parsed.account : undefined,
     }
-    return { ...store, account: store.account ?? legacyAccount(store.positions) }
+    return { accounts: { [legacyUserId]: { ...legacy, account: legacy.account ?? legacyAccount(legacy.positions, legacyUserId) } } }
   } catch {
-    return { account: defaultAccount(), orders: [], positions: [] }
+    return { accounts: {} }
   }
 }
 
-function writeStore(store) {
-  writeFileSync(storePath, JSON.stringify({ account: store.account ?? defaultAccount(), orders: store.orders, positions: store.positions }, null, 2))
+function readStore(userId = legacyUserId) {
+  const store = readRootStore().accounts[userId]
+  return store ?? { account: defaultAccount(Date.now(), userId), orders: [], positions: [] }
+}
+
+function writeStore(store, userId = legacyUserId) {
+  const root = readRootStore()
+  root.accounts[userId] = { account: store.account ?? defaultAccount(Date.now(), userId), orders: store.orders, positions: store.positions }
+  writeFileSync(storePath, JSON.stringify(root, null, 2))
 }
 
 function numberOrNull(value) {
@@ -62,8 +69,8 @@ function response(status, body) {
   return { status, body }
 }
 
-function legacyAccount(positions) {
-  const account = defaultAccount()
+function legacyAccount(positions, userId = legacyUserId) {
+  const account = defaultAccount(Date.now(), userId)
   account.cashBalance = roundMoney(
     account.initialCash +
       positions.reduce((sum, position) => {
@@ -157,7 +164,7 @@ function accountSummary(store, markInput = {}, now = Date.now()) {
   }
 }
 
-export function submitPaperOrder(body, now = Date.now()) {
+export function submitPaperOrder(body, now = Date.now(), userId = legacyUserId) {
   const strategy = body.strategySnapshot ?? body.strategy
   if (!strategy || !Array.isArray(strategy.legs)) {
     return response(400, { error: 'strategySnapshot.legs is required.' })
@@ -168,8 +175,8 @@ export function submitPaperOrder(body, now = Date.now()) {
 
   const underlyingPrice = numberOrNull(body.underlyingPrice ?? body.marketSnapshot?.price)
   const quantity = numberOrNull(body.quantity ?? 1) ?? 1
-  const result = fillPaperOrder({ userId, accountId, ticker, strategy, underlyingPrice, quantity, now })
-  const store = readStore()
+  const result = fillPaperOrder({ userId, accountId: `paper-${userId}`, ticker, strategy, underlyingPrice, quantity, now })
+  const store = readStore(userId)
   if (result.position) {
     const fees = result.position.entrySnapshot.fees?.total ?? 0
     const cashAfter = roundMoney(store.account.cashBalance - result.position.entrySnapshot.strategyValue * quantity - fees)
@@ -188,7 +195,7 @@ export function submitPaperOrder(body, now = Date.now()) {
           ? 'PAPER_TRADE_INSUFFICIENT_CASH: simulated cash balance is not enough for this order.'
           : 'PAPER_TRADE_RISK_RESERVE_INSUFFICIENT: simulated cash balance must cover the remaining defined max loss after opening premium and fees.'
       store.orders.unshift(result.order)
-      writeStore(store)
+      writeStore(store, userId)
       return response(422, { order: result.order, warnings: [result.order.rejectReason], storage: 'local_file' })
     }
   }
@@ -198,29 +205,29 @@ export function submitPaperOrder(body, now = Date.now()) {
     store.account.cashBalance = roundMoney(store.account.cashBalance - result.position.entrySnapshot.strategyValue * quantity - (result.position.entrySnapshot.fees?.total ?? 0))
     store.account.updatedAt = isoNow(now)
   }
-  writeStore(store)
+  writeStore(store, userId)
   return response(result.order.status === 'filled' ? 201 : 422, { ...result, storage: 'local_file' })
 }
 
-export function listPaperOrders() {
-  return response(200, { orders: readStore().orders, storage: 'local_file' })
+export function listPaperOrders(userId = legacyUserId) {
+  return response(200, { orders: readStore(userId).orders, storage: 'local_file' })
 }
 
-export function listPaperPositions({ status = 'open', currentUnderlyingPrice, now = Date.now() } = {}) {
-  const store = readStore()
+export function listPaperPositions({ status = 'open', currentUnderlyingPrice, now = Date.now() } = {}, userId = legacyUserId) {
+  const store = readStore(userId)
   const positions = positionsWithMarks(store, { currentUnderlyingPrice }, now)
     .filter((position) => status === 'all' || position.status === status)
   return response(200, { positions, storage: 'local_file' })
 }
 
-export function closePaperPositionById(positionId, body, now = Date.now()) {
+export function closePaperPositionById(positionId, body, now = Date.now(), userId = legacyUserId) {
   const price = numberOrNull(body.currentUnderlyingPrice ?? body.currentPrice ?? body.marketSnapshot?.price)
   if (price === null) return response(400, { error: 'currentUnderlyingPrice is required.' })
   if (!isUsOptionsRegularTradingHours(now)) {
     return response(422, { error: 'PAPER_TRADE_MARKET_CLOSED: US equity options paper orders are limited to regular trading hours, 09:30-16:00 ET on weekdays.' })
   }
 
-  const store = readStore()
+  const store = readStore(userId)
   const index = store.positions.findIndex((position) => position.id === positionId)
   if (index < 0) return response(404, { error: 'Paper position not found.' })
   if (store.positions[index].status !== 'open') return response(409, { error: 'Paper position is already closed.' })
@@ -229,19 +236,19 @@ export function closePaperPositionById(positionId, body, now = Date.now()) {
   store.positions[index] = result.position
   store.account.cashBalance = roundMoney(store.account.cashBalance + result.closeSnapshot.strategyValue * result.position.quantity - (result.closeSnapshot.fees?.total ?? 0))
   store.account.updatedAt = isoNow(now)
-  writeStore(store)
+  writeStore(store, userId)
   return response(200, { ...result, storage: 'local_file' })
 }
 
-export function getPaperAccount(body = {}, now = Date.now()) {
-  return response(200, accountSummary(readStore(), body, now))
+export function getPaperAccount(body = {}, now = Date.now(), userId = legacyUserId) {
+  return response(200, accountSummary(readStore(userId), body, now))
 }
 
-export function resetPaperAccount(body = {}, now = Date.now()) {
+export function resetPaperAccount(body = {}, now = Date.now(), userId = legacyUserId) {
   const amount = numberOrNull(body.initialCash ?? body.cash ?? body.amount) ?? defaultInitialCash
   if (amount <= 0) return response(400, { error: 'initialCash must be positive.' })
-  const account = { ...defaultAccount(now), initialCash: roundMoney(amount), cashBalance: roundMoney(amount) }
+  const account = { ...defaultAccount(now, userId), initialCash: roundMoney(amount), cashBalance: roundMoney(amount) }
   const store = { account, orders: [], positions: [] }
-  writeStore(store)
+  writeStore(store, userId)
   return response(200, { account, summary: accountSummary(store, {}, now).summary, positions: [], storage: 'local_file' })
 }

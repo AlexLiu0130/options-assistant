@@ -132,4 +132,9 @@ assert.equal(reset.body.account.initialCash, 250000)
 assert.equal(reset.body.positions.length, 0)
 assert.equal(listPaperOrders().body.orders.length, 0)
 
+resetPaperAccount({ initialCash: 111111 }, Date.now(), 'oauth-user-a')
+resetPaperAccount({ initialCash: 222222 }, Date.now(), 'oauth-user-b')
+assert.equal(getPaperAccount({}, Date.now(), 'oauth-user-a').body.account.initialCash, 111111)
+assert.equal(getPaperAccount({}, Date.now(), 'oauth-user-b').body.account.initialCash, 222222)
+
 console.log('paper trade runtime smoke passed')

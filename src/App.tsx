@@ -15,6 +15,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { AssistantExplanationPanel } from './components/AssistantExplanationPanel'
+import { AuthGate } from './components/AuthGate'
 import { AssistantBot } from './components/AssistantBot'
 import { HomePage } from './components/HomePage'
 import { OptionChainTable } from './components/OptionChainTable'
@@ -227,7 +228,7 @@ function normalizeExperience(value?: string): ExperienceLevel | undefined {
   return undefined
 }
 
-function App() {
+function AuthenticatedApp() {
   const hash = useHash()
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try { return localStorage.getItem('qveris-theme') === 'dark' ? 'dark' : 'light' } catch { return 'light' }
@@ -249,6 +250,10 @@ function App() {
   }
 
   return <HomePage theme={theme} onToggleTheme={toggleTheme} />
+}
+
+function App() {
+  return <AuthGate><AuthenticatedApp /></AuthGate>
 }
 
 function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: string; theme: 'light' | 'dark'; onToggleTheme: () => void }) {

@@ -66,6 +66,16 @@ async function readJsonResponse(response, fallback) {
   }
 }
 
+function logAuthFailure(logger, event, error) {
+  const errorName = error instanceof Error ? error.name : 'Error'
+  const errorMessage = error instanceof Error ? error.message : 'Unknown authentication error.'
+  logger?.error?.('[oauth]', {
+    event,
+    error_name: errorName,
+    error_message: errorMessage.slice(0, 300),
+  })
+}
+
 function validateMetadata(metadata, authBaseUrl) {
   const required = ['issuer', 'authorization_endpoint', 'token_endpoint', 'userinfo_endpoint', 'jwks_uri']
   if (required.some((key) => !metadata?.[key])) throw new Error('QVeris discovery metadata is incomplete.')
@@ -82,15 +92,22 @@ async function verifyIdToken(token, { clientId, issuer, jwksUri, nonce, jwksCach
   const header = decodeSegment(encodedHeader)
   const payload = decodeSegment(encodedPayload)
   if (header.alg !== 'RS256' || !header.kid) throw new Error('ID token algorithm is not allowed.')
-  let keys = jwksCache.value
-  if (!keys || jwksCache.expires <= Date.now()) {
+  const loadKeys = async () => {
     const response = await fetch(jwksUri, { headers: { accept: 'application/json' } })
     if (!response.ok) throw new Error('Unable to load QVeris signing keys.')
-    keys = await readJsonResponse(response, 'QVeris signing keys are unreadable.')
+    const keys = await readJsonResponse(response, 'QVeris signing keys are unreadable.')
     jwksCache.value = keys
     jwksCache.expires = Date.now() + metadataTtlMs
+    return keys
   }
-  const jwk = keys.keys?.find((item) => item.kid === header.kid && item.alg === 'RS256')
+
+  const cacheIsFresh = Boolean(jwksCache.value && jwksCache.expires > Date.now())
+  let keys = cacheIsFresh ? jwksCache.value : await loadKeys()
+  let jwk = keys.keys?.find((item) => item.kid === header.kid && item.alg === 'RS256')
+  if (!jwk && cacheIsFresh) {
+    keys = await loadKeys()
+    jwk = keys.keys?.find((item) => item.kid === header.kid && item.alg === 'RS256')
+  }
   if (!jwk) throw new Error('QVeris signing key is unknown.')
   const valid = verify(
     'RSA-SHA256',
@@ -101,6 +118,7 @@ async function verifyIdToken(token, { clientId, issuer, jwksUri, nonce, jwksCach
   if (!valid) throw new Error('ID token signature is invalid.')
   const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud]
   if (payload.iss !== issuer || !audiences.includes(clientId)) throw new Error('ID token issuer or audience is invalid.')
+  if (typeof payload.sub !== 'string' || !payload.sub.trim()) throw new Error('ID token subject is invalid.')
   const now = Date.now()
   if (!Number.isFinite(payload.exp) || payload.exp * 1000 <= now) throw new Error('ID token has expired.')
   if (payload.nbf && payload.nbf * 1000 > now + 60000) throw new Error('ID token is not active.')
@@ -119,6 +137,7 @@ export function createAuthRuntime({
   scopes = 'openid profile email',
   sessionSecret,
   secureCookie = false,
+  logger = console,
 }) {
   const normalizedAuthBaseUrl = String(authBaseUrl || '').replace(/\/$/, '')
   const accountResource = resource || `${normalizedAuthBaseUrl}/account`
@@ -254,9 +273,7 @@ export function createAuthRuntime({
           }),
         })
         const tokens = await readJsonResponse(response, 'QVeris token response is unreadable.')
-        if (!response.ok || !tokens.id_token || !tokens.access_token) {
-          throw new Error(tokens?.error_description || 'QVeris token exchange failed.')
-        }
+        if (!response.ok || !tokens.id_token || !tokens.access_token) throw new Error('QVeris token exchange failed.')
         const claims = await verifyIdToken(tokens.id_token, {
           clientId,
           issuer: discovery.issuer,
@@ -268,7 +285,12 @@ export function createAuthRuntime({
           headers: { authorization: `Bearer ${tokens.access_token}`, accept: 'application/json' },
         })
         const userinfo = await readJsonResponse(userinfoResponse, 'QVeris UserInfo response is unreadable.')
-        if (!userinfoResponse.ok || userinfo.sub !== claims.sub) throw new Error('QVeris UserInfo validation failed.')
+        if (
+          !userinfoResponse.ok
+          || typeof userinfo.sub !== 'string'
+          || !userinfo.sub.trim()
+          || userinfo.sub !== claims.sub
+        ) throw new Error('QVeris UserInfo validation failed.')
         if (userinfo.app_access?.client_id !== clientId || userinfo.app_access?.status !== 'active') {
           throw new Error('Application access is not active.')
         }
@@ -291,7 +313,8 @@ export function createAuthRuntime({
           exp: Date.now() + tokenTtlSeconds * 1000,
         })
         redirect(res, '/', [sessionCookie(sessionId, tokenTtlSeconds), clearTransaction])
-      } catch {
+      } catch (error) {
+        logAuthFailure(logger, 'callback_failed', error)
         redirect(res, '/?auth_error=authorization_failed', [clearTransaction])
       }
       return true

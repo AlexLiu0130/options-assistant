@@ -4,16 +4,26 @@ import { generateKeyPairSync, sign } from 'node:crypto'
 
 import { createAuthRuntime } from '../server/auth.mjs'
 
-const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
-const kid = 'smoke-key'
-const jwk = { ...publicKey.export({ format: 'jwk' }), kid, alg: 'RS256', use: 'sig' }
+function signingKey(kid) {
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
+  return { privateKey, jwk: { ...publicKey.export({ format: 'jwk' }), kid, alg: 'RS256', use: 'sig' } }
+}
+
+const oldSigningKey = signingKey('smoke-key-old')
+const newSigningKey = signingKey('smoke-key-new')
+let activeSigningKey = oldSigningKey
 let expectedNonce = ''
 let tokenRequest = null
+let tokenSubject = 'user-1'
+let userinfoSubject = 'user-1'
+let tokenFailure = false
+let jwksRequests = 0
+const authLogs = []
 
 function jwt(payload) {
-  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid })).toString('base64url')
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid: activeSigningKey.jwk.kid })).toString('base64url')
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url')
-  const signature = sign('RSA-SHA256', Buffer.from(`${header}.${body}`), privateKey).toString('base64url')
+  const signature = sign('RSA-SHA256', Buffer.from(`${header}.${body}`), activeSigningKey.privateKey).toString('base64url')
   return `${header}.${body}.${signature}`
 }
 
@@ -36,8 +46,9 @@ const oauthServer = createServer(async (req, res) => {
     }))
   }
   if (req.url === '/oauth/jwks-v2') {
+    jwksRequests += 1
     res.writeHead(200, { 'content-type': 'application/json' })
-    return res.end(JSON.stringify({ keys: [jwk] }))
+    return res.end(JSON.stringify({ keys: [activeSigningKey.jwk] }))
   }
   if (req.url === '/oauth/token-v2') {
     const chunks = []
@@ -46,19 +57,23 @@ const oauthServer = createServer(async (req, res) => {
       authorization: req.headers.authorization,
       body: new URLSearchParams(Buffer.concat(chunks).toString('utf8')),
     }
+    if (tokenFailure) {
+      res.writeHead(400, { 'content-type': 'application/json' })
+      return res.end(JSON.stringify({ error: 'invalid_grant', error_description: 'access_token=must-not-appear' }))
+    }
     const now = Math.floor(Date.now() / 1000)
     res.writeHead(200, { 'content-type': 'application/json' })
     return res.end(JSON.stringify({
       access_token: 'access-token',
       expires_in: 120,
-      id_token: jwt({ iss: authBaseUrl, aud: 'options-smoke', sub: 'user-1', email: 'user@example.com', name: 'Test User', nonce: expectedNonce, token_use: 'id', app_access: { client_id: 'options-smoke', status: 'active' }, iat: now, exp: now + 300 }),
+      id_token: jwt({ iss: authBaseUrl, aud: 'options-smoke', sub: tokenSubject, email: 'user@example.com', name: 'Test User', nonce: expectedNonce, token_use: 'id', app_access: { client_id: 'options-smoke', status: 'active' }, iat: now, exp: now + 300 }),
     }))
   }
   if (req.url === '/oauth/userinfo-v2') {
     assert.equal(req.headers.authorization, 'Bearer access-token')
     res.writeHead(200, { 'content-type': 'application/json' })
     return res.end(JSON.stringify({
-      sub: 'user-1',
+      sub: userinfoSubject,
       email: 'user@example.com',
       name: 'Test User',
       app_access: { client_id: 'options-smoke', status: 'active' },
@@ -88,20 +103,24 @@ runtime = createAuthRuntime({
   redirectUri: `${appBaseUrl}/auth/callback`,
   resource: `${authBaseUrl}/account`,
   scopes: 'openid profile email',
+  logger: { error: (...args) => authLogs.push(args) },
 })
 
-const loginResponse = await fetch(`${appBaseUrl}/api/auth/login-url`)
-assert.equal(loginResponse.status, 200)
-const transactionCookie = loginResponse.headers.get('set-cookie').split(';', 1)[0]
-const login = await loginResponse.json()
-const authorizeUrl = new URL(login.authorizeUrl)
+async function startLogin() {
+  const response = await fetch(`${appBaseUrl}/api/auth/login-url`)
+  assert.equal(response.status, 200)
+  const transactionCookie = response.headers.get('set-cookie').split(';', 1)[0]
+  const login = await response.json()
+  const authorizeUrl = new URL(login.authorizeUrl)
+  expectedNonce = authorizeUrl.searchParams.get('nonce')
+  return { response, transactionCookie, login, authorizeUrl, state: authorizeUrl.searchParams.get('state') }
+}
+
+const { transactionCookie, authorizeUrl, state } = await startLogin()
 assert.equal(authorizeUrl.pathname, '/oauth/authorize-v2')
 assert.equal(authorizeUrl.searchParams.get('resource'), `${authBaseUrl}/account`)
 assert.equal(authorizeUrl.searchParams.get('scope'), 'openid profile email')
 assert.equal(authorizeUrl.searchParams.get('code_challenge_method'), 'S256')
-expectedNonce = authorizeUrl.searchParams.get('nonce')
-const state = authorizeUrl.searchParams.get('state')
-
 const invalidState = await fetch(`${appBaseUrl}/auth/callback?code=valid-code&state=wrong`, { redirect: 'manual', headers: { cookie: transactionCookie } })
 assert.equal(invalidState.status, 302)
 assert.equal(invalidState.headers.get('location'), '/?auth_error=invalid_state')
@@ -122,6 +141,34 @@ const logout = await fetch(`${appBaseUrl}/api/auth/logout`, { method: 'POST', he
 assert.equal(logout.status, 200)
 assert.match(logout.headers.get('set-cookie'), /Max-Age=0/)
 assert.equal((await fetch(`${appBaseUrl}/api/auth/me`)).status, 401)
+
+activeSigningKey = newSigningKey
+const rotatedLogin = await startLogin()
+const rotatedCallback = await fetch(`${appBaseUrl}/auth/callback?code=rotated-code&state=${encodeURIComponent(rotatedLogin.state)}`, { redirect: 'manual', headers: { cookie: rotatedLogin.transactionCookie } })
+assert.equal(rotatedCallback.status, 302)
+assert.equal(rotatedCallback.headers.get('location'), '/')
+assert.equal(jwksRequests, 2, 'A new signing key should force one JWKS refresh.')
+
+tokenSubject = ''
+userinfoSubject = ''
+const emptySubjectLogin = await startLogin()
+const emptySubjectCallback = await fetch(`${appBaseUrl}/auth/callback?code=empty-subject-code&state=${encodeURIComponent(emptySubjectLogin.state)}`, { redirect: 'manual', headers: { cookie: emptySubjectLogin.transactionCookie } })
+assert.equal(emptySubjectCallback.headers.get('location'), '/?auth_error=authorization_failed')
+assert.equal(authLogs.at(-1)[1].error_message, 'ID token subject is invalid.')
+
+tokenSubject = 'user-1'
+const emptyUserinfoSubjectLogin = await startLogin()
+const emptyUserinfoSubjectCallback = await fetch(`${appBaseUrl}/auth/callback?code=empty-userinfo-subject-code&state=${encodeURIComponent(emptyUserinfoSubjectLogin.state)}`, { redirect: 'manual', headers: { cookie: emptyUserinfoSubjectLogin.transactionCookie } })
+assert.equal(emptyUserinfoSubjectCallback.headers.get('location'), '/?auth_error=authorization_failed')
+assert.equal(authLogs.at(-1)[1].error_message, 'QVeris UserInfo validation failed.')
+
+tokenFailure = true
+const failedLogin = await startLogin()
+const failedCallback = await fetch(`${appBaseUrl}/auth/callback?code=sensitive-code&state=${encodeURIComponent(failedLogin.state)}`, { redirect: 'manual', headers: { cookie: failedLogin.transactionCookie } })
+assert.equal(failedCallback.headers.get('location'), '/?auth_error=authorization_failed')
+const serializedLogs = JSON.stringify(authLogs)
+assert.doesNotMatch(serializedLogs, /sensitive-code|must-not-appear|access_token/)
+assert.match(serializedLogs, /QVeris token exchange failed/)
 
 await Promise.all([new Promise((resolve) => appServer.close(resolve)), new Promise((resolve) => oauthServer.close(resolve))])
 console.log('OAuth runtime smoke checks passed.')

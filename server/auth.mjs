@@ -1,7 +1,7 @@
 import { createHash, createHmac, createPublicKey, randomBytes, timingSafeEqual, verify } from 'node:crypto'
 
 const transactionTtlMs = 10 * 60 * 1000
-const maximumSessionTtlMs = 60 * 60 * 1000
+const applicationSessionTtlMs = 24 * 60 * 60 * 1000
 const metadataTtlMs = 5 * 60 * 1000
 
 function base64url(buffer) {
@@ -294,15 +294,9 @@ export function createAuthRuntime({
         if (userinfo.app_access?.client_id !== clientId || userinfo.app_access?.status !== 'active') {
           throw new Error('Application access is not active.')
         }
-        const idTokenTtlSeconds = Math.floor((claims.exp * 1000 - Date.now()) / 1000)
-        const tokenTtlSeconds = Math.max(
-          1,
-          Math.min(
-            Number(tokens.expires_in) || 3600,
-            idTokenTtlSeconds,
-            maximumSessionTtlMs / 1000,
-          ),
-        )
+        // Temporary private-beta policy: the application session remains
+        // valid for 24 hours after OAuth identity has been verified.
+        const tokenTtlSeconds = applicationSessionTtlMs / 1000
         const sessionId = createSignedPayload('session', {
           user: {
             sub: userinfo.sub,

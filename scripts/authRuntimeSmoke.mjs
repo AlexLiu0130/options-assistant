@@ -131,7 +131,7 @@ assert.equal(tokenRequest.body.get('grant_type'), 'authorization_code')
 assert.equal(tokenRequest.body.get('redirect_uri'), `${appBaseUrl}/auth/callback`)
 assert.ok(tokenRequest.body.get('code_verifier'))
 const cookie = callback.headers.getSetCookie().find((value) => value.startsWith('options_session=')).split(';', 1)[0]
-assert.match(callback.headers.getSetCookie().find((value) => value.startsWith('options_session=')), /Max-Age=120/)
+assert.match(callback.headers.getSetCookie().find((value) => value.startsWith('options_session=')), /Max-Age=86400/)
 const me = await fetch(`${appBaseUrl}/api/auth/me`, { headers: { cookie } })
 assert.equal(me.status, 200)
 assert.equal((await me.json()).user.sub, 'user-1')

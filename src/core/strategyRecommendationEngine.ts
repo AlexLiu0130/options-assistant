@@ -26,7 +26,13 @@ function mid(contract: QverisOptionContract) {
   ) {
     return Number(((contract.bid + contract.ask) / 2).toFixed(2))
   }
-  return typeof contract.last === 'number' && contract.last > 0 ? contract.last : undefined
+  return undefined
+}
+
+function relativeSpread(contract: QverisOptionContract) {
+  const quote = mid(contract)
+  if (!quote || typeof contract.bid !== 'number' || typeof contract.ask !== 'number') return undefined
+  return (contract.ask - contract.bid) / quote
 }
 
 function daysToExpiry(expiry: string) {
@@ -358,9 +364,15 @@ function bestCashSecuredPut(puts: QverisOptionContract[], view: ParsedView) {
   if (!otm.length) return undefined
   const targetDelta = otm.filter((contract) => {
     const absDelta = Math.abs(contract.delta ?? 0)
-    return absDelta >= 0.2 && absDelta <= 0.35
+    return absDelta >= 0.15 && absDelta <= (view.experience_level === 'beginner' ? 0.25 : 0.3)
   })
-  return nearest(targetDelta.length ? targetDelta : otm, view.current_price * 0.97)
+  const pool = targetDelta.length ? targetDelta : otm
+  return [...pool].sort(
+    (a, b) =>
+      deltaDistance(a, view.experience_level === 'beginner' ? 0.2 : 0.25) -
+        deltaDistance(b, view.experience_level === 'beginner' ? 0.2 : 0.25) ||
+      Math.abs((a.strike ?? 0) - view.current_price * 0.95) - Math.abs((b.strike ?? 0) - view.current_price * 0.95),
+  )[0]
 }
 
 function longButterflyParts(contracts: QverisOptionContract[], target: number) {
@@ -451,13 +463,32 @@ function legContracts(strategy: StrategyCandidate, options?: QverisOptionsRespon
 function averageSpreadPct(strategy: StrategyCandidate, options?: QverisOptionsResponse) {
   const contracts = legContracts(strategy, options)
   const spreads = contracts
-    .map((contract) => {
-      const quote = mid(contract)
-      if (!quote || typeof contract.bid !== 'number' || typeof contract.ask !== 'number') return undefined
-      return (contract.ask - contract.bid) / quote
-    })
+    .map(relativeSpread)
     .filter((item): item is number => typeof item === 'number' && Number.isFinite(item))
   return spreads.length ? spreads.reduce((sum, item) => sum + item, 0) / spreads.length : undefined
+}
+
+function estimatedRoundTripCost(strategy: StrategyCandidate, options?: QverisOptionsResponse) {
+  const contracts = legContracts(strategy, options)
+  if (contracts.length !== strategy.legs.length) return undefined
+  return Number(
+    contracts
+      .reduce((sum, contract, index) => {
+        if (typeof contract.bid !== 'number' || typeof contract.ask !== 'number') return sum
+        return sum + (contract.ask - contract.bid) * strategy.legs[index].quantity * multiplier
+      }, 0)
+      .toFixed(2),
+  )
+}
+
+function hasExecutableQuotes(strategy: StrategyCandidate, options?: QverisOptionsResponse) {
+  if (!strategy.legs.length) return true
+  const contracts = legContracts(strategy, options)
+  if (contracts.length !== strategy.legs.length) return false
+  return contracts.every((contract) => {
+    const spread = relativeSpread(contract)
+    return spread !== undefined && spread <= 0.4
+  })
 }
 
 function numericMaxLoss(strategy: StrategyCandidate) {
@@ -485,10 +516,20 @@ function greekExposure(strategy: StrategyCandidate, options?: QverisOptionsRespo
 }
 
 function chainIv(options?: QverisOptionsResponse) {
-  const ivs = options?.contracts
-    .map((contract) => contract.impliedVolatility)
+  const spot = options?.market?.price
+  const nearAtm = options?.contracts.filter((contract) => {
+    if (!spot || !contract.strike) return true
+    const moneyness = contract.strike / spot
+    const delta = Math.abs(contract.delta ?? 0)
+    return moneyness >= 0.9 && moneyness <= 1.1 && (delta === 0 || (delta >= 0.35 && delta <= 0.65))
+  })
+  const ivs = nearAtm
+    ?.map((contract) => contract.impliedVolatility)
     .filter((iv): iv is number => typeof iv === 'number' && Number.isFinite(iv) && iv > 0)
-  return ivs?.length ? ivs.reduce((sum, iv) => sum + iv, 0) / ivs.length : undefined
+    .sort((a, b) => a - b)
+  if (!ivs?.length) return undefined
+  const middle = Math.floor(ivs.length / 2)
+  return ivs.length % 2 ? ivs[middle] : (ivs[middle - 1] + ivs[middle]) / 2
 }
 
 function liquidityStats(strategy: StrategyCandidate, options?: QverisOptionsResponse) {
@@ -653,15 +694,24 @@ function scoreStrategy(strategy: StrategyCandidate, view: ParsedView, options?: 
   }
 
   const targetPl = typeof strategy.targetPricePl === 'number' ? strategy.targetPricePl : undefined
+  const roundTripCost = estimatedRoundTripCost(strategy, options)
   if (view.target_price && targetPl !== undefined) {
-    if (targetPl > 0) {
-      score += 15
-      reasons.push('Positive estimated P/L at the target price.')
-      detail('target', 'Positive estimated P/L at the target price.', 'positive', targetPl)
+    const netTargetPl = targetPl - (roundTripCost ?? 0)
+    if (netTargetPl > 0) {
+      score += 10
+      reasons.push('Target-case P/L remains positive after estimated quote cost.')
+      detail('target', 'Target-case P/L remains positive after estimated quote cost.', 'positive', Number(netTargetPl.toFixed(0)))
+      const maxLossForEfficiency = numericMaxLoss(strategy)
+      if (maxLossForEfficiency && maxLossForEfficiency > 0) {
+        const payoffRatio = netTargetPl / maxLossForEfficiency
+        const payoffScore = Math.max(0, Math.min(8, payoffRatio * 4))
+        score += payoffScore
+        detail('target', 'Target-case reward is evaluated against defined maximum loss.', payoffScore >= 4 ? 'positive' : 'neutral', Number(payoffRatio.toFixed(2)))
+      }
     } else {
-      score -= 20
-      warnings.push('Estimated P/L is negative at the target price.')
-      detail('target', 'Estimated P/L is negative at the target price.', 'negative', targetPl)
+      score -= 22
+      warnings.push('Target-case P/L is not positive after estimated quote cost.')
+      detail('target', 'Target-case P/L is not positive after estimated quote cost.', 'negative', Number(netTargetPl.toFixed(0)))
     }
   } else if (strategy.label === 'conditional') {
     score -= 7
@@ -688,14 +738,14 @@ function scoreStrategy(strategy: StrategyCandidate, view: ParsedView, options?: 
 
   if (typeof strategy.probabilityOfProfit === 'number') {
     if (strategy.probabilityOfProfit >= 65) {
-      score += 10
-      reasons.push('Higher probability-of-profit estimate.')
+      score += 4
+      reasons.push('Probability-of-profit estimate is supportive, not decisive.')
       detail('probability', 'Higher probability-of-profit estimate.', 'positive', strategy.probabilityOfProfit)
     } else if (strategy.probabilityOfProfit >= 45) {
-      score += 5
+      score += 2
       detail('probability', 'Moderate probability-of-profit estimate.', 'neutral', strategy.probabilityOfProfit)
     } else if (strategy.probabilityOfProfit < 30) {
-      score -= 10
+      score -= 4
       warnings.push('Low probability-of-profit estimate.')
       detail('probability', 'Low probability-of-profit estimate.', 'negative', strategy.probabilityOfProfit)
     }
@@ -708,10 +758,13 @@ function scoreStrategy(strategy: StrategyCandidate, view: ParsedView, options?: 
       reasons.push('Tighter quoted bid/ask spread.')
       detail('liquidity', 'Tighter quoted bid/ask spread.', 'positive', `${(spreadPct * 100).toFixed(1)}%`)
     } else if (spreadPct > 0.18) {
-      score -= 12
+      score -= 16
       warnings.push('Wide quoted bid/ask spread.')
       detail('liquidity', 'Wide quoted bid/ask spread.', 'negative', `${(spreadPct * 100).toFixed(1)}%`)
     }
+  }
+  if (roundTripCost !== undefined) {
+    detail('liquidity', 'Estimated round-trip quote cost across all legs.', 'neutral', `$${roundTripCost.toFixed(0)}`)
   }
 
   const iv = chainIv(options)
@@ -1538,7 +1591,8 @@ export function recommendStrategyTypes(
     const ready = finish(
       contractCandidates
         .filter((item): item is StrategyCandidate => Boolean(item))
-        .filter((item) => hasUsableStrikeCoverage(item, view)),
+        .filter((item) => hasUsableStrikeCoverage(item, view))
+        .filter((item) => hasExecutableQuotes(item, options)),
     )
     if (ready.length) return ready
   }

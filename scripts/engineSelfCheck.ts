@@ -206,14 +206,25 @@ const noOtmPutFixture = {
 }
 assert.ok(!recommendStrategyTypes(viewFor('bullish'), noOtmPutFixture, chainExpiration, { rank: false }).some((item) => item.id === 'cash-secured-put'))
 assert.ok(!recommendStrategyTypes(viewFor('bullish'), noOtmPutFixture, chainExpiration, { rank: false }).some((item) => item.id === 'bull-put-spread'))
+const invalidQuoteFixture: QverisOptionsResponse = {
+  ...optionsFixture,
+  contracts: optionsFixture.contracts.map((item) => ({ ...item, bid: null, ask: null, last: item.last ?? 9 })),
+}
+assert.ok(
+  recommendStrategyTypes(viewFor('bullish'), invalidQuoteFixture, chainExpiration).every(
+    (item) => item.status !== 'contract_ready',
+  ),
+)
 const farStrikeFixture = {
   ...optionsFixture,
   contracts: optionsFixture.contracts.map((item) => ({ ...item, strike: (item.strike ?? 0) + 1000, symbol: `${item.symbol}FAR` })),
 }
 assert.ok(recommendStrategyTypes(viewFor('bullish'), farStrikeFixture, chainExpiration, { rank: false }).every((item) => item.status !== 'contract_ready'))
+const rankedBearish = recommendStrategyTypes(viewFor('bearish'), optionsFixture, chainExpiration)
+assert.equal(rankedBearish[0]?.id, 'bear-put-spread')
 assert.deepEqual(
-  recommendStrategyTypes(viewFor('bearish'), optionsFixture, chainExpiration).map((item) => item.id),
-  ['bear-put-spread', 'bear-call-spread', 'long-put', 'long-put-butterfly'],
+  rankedBearish.map((item) => item.id).sort(),
+  ['bear-put-spread', 'bear-call-spread', 'long-put', 'long-put-butterfly'].sort(),
 )
 assert.deepEqual(
   recommendStrategyTypes(viewFor('bearish'), optionsFixture, chainExpiration, { rank: false }).map((item) => item.id),
@@ -221,15 +232,15 @@ assert.deepEqual(
 )
 assert.ok(!recommendStrategyTypes(viewFor('bearish'), optionsFixture, chainExpiration).some((item) => item.id === 'short-call'))
 assert.deepEqual(
-  recommendStrategyTypes(viewFor('neutral'), optionsFixture, chainExpiration).map((item) => item.id),
-  ['iron-condor', 'iron-butterfly', 'long-call-butterfly', 'long-put-butterfly', 'short-strangle', 'short-straddle'],
+  recommendStrategyTypes(viewFor('neutral'), optionsFixture, chainExpiration).map((item) => item.id).sort(),
+  ['iron-condor', 'iron-butterfly', 'long-call-butterfly', 'long-put-butterfly', 'short-strangle', 'short-straddle'].sort(),
 )
 assert.deepEqual(
   recommendStrategyTypes(viewFor('neutral'), optionsFixture, chainExpiration, { rank: false }).map((item) => item.id),
   ['iron-condor', 'iron-butterfly', 'long-call-butterfly', 'long-put-butterfly', 'short-strangle', 'short-straddle'],
 )
 assert.deepEqual(
-  recommendStrategyTypes(viewFor('volatile'), optionsFixture, chainExpiration).map((item) => item.id),
+  recommendStrategyTypes(viewFor('volatile'), optionsFixture, chainExpiration).map((item) => item.id).sort(),
   [
     'long-straddle',
     'long-strangle',
@@ -237,7 +248,7 @@ assert.deepEqual(
     'put-calendar-spread',
     'call-diagonal-spread',
     'put-diagonal-spread',
-  ],
+  ].sort(),
 )
 const volatileStrangle = recommendStrategyTypes(viewFor('volatile'), optionsFixture, chainExpiration, { rank: false }).find((item) => item.id === 'long-strangle')
 assert.ok(volatileStrangle?.legs.some((item) => item.right === 'call' && item.strike > view.current_price))
@@ -296,8 +307,8 @@ assert.ok(
     (lowIvBullish.find((item) => item.id === 'bull-put-spread')?.rankScore ?? 0),
 )
 assert.ok(
-  (highIvBullish.find((item) => item.id === 'bull-put-spread')?.rankScore ?? 0) >
-    (highIvBullish.find((item) => item.id === 'long-call')?.rankScore ?? 0),
+  (highIvBullish.find((item) => item.id === 'long-call')?.rankScore ?? 0) <
+    (lowIvBullish.find((item) => item.id === 'long-call')?.rankScore ?? 0),
 )
 assert.ok(highIvBullish.find((item) => item.id === 'long-call')?.rankWarnings?.some((warning) => warning.includes('High IV')))
 

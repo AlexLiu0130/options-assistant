@@ -7,6 +7,7 @@ import {
   type EducationLevel,
   type StrategyEducationItem,
 } from '../core/strategyEducationContent'
+import { recordProductEvent } from '../core/productEventsApi'
 import { useT } from '../i18n'
 import type { StrategyCandidate } from '../types/strategyTypes'
 import { GreeksQuadChart } from './GreeksQuadChart'
@@ -224,6 +225,16 @@ export function StrategyEducationPage({ theme, onToggleTheme }: { theme: 'light'
 
   const selected = filteredItems.find((item) => item.id === selectedId) ?? filteredItems[0]
 
+  function selectStrategy(item: StrategyEducationItem) {
+    if (selected?.id !== item.id) {
+      recordProductEvent({
+        eventName: 'education_viewed',
+        properties: { strategyId: item.id, strategyName: item.name, page: 'education' },
+      })
+    }
+    setSelectedId(item.id)
+  }
+
   return (
     <main className="oa-shell edu-shell">
       <header className="oa-topbar">
@@ -296,7 +307,7 @@ export function StrategyEducationPage({ theme, onToggleTheme }: { theme: 'light'
                 key={item.id}
                 item={item}
                 active={selected?.id === item.id}
-                onSelect={() => setSelectedId(item.id)}
+                onSelect={() => selectStrategy(item)}
               />
             ))}
           </nav>

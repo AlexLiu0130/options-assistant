@@ -61,8 +61,8 @@ function breakevens(strategy: StrategyCandidate) {
       : []
 }
 
-function paperId(prefix: string, now: number) {
-  return `${prefix}-${now}-${crypto.randomUUID()}`
+function paperId(_prefix: string, _now: number) {
+  return crypto.randomUUID()
 }
 
 function estimateExpirationRisk(legs: StrategyLeg[]) {

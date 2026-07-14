@@ -7,6 +7,7 @@ import {
   type AssistantChatResponse,
   type AssistantStructuredUpdates,
 } from '../core/assistantPolicy'
+import { recordProductEvent } from '../core/productEventsApi'
 import { useT } from '../i18n'
 import type { QverisMarketSnapshot, QverisOptionsResponse } from '../types/optionTypes'
 import type { ParsedView, StrategyCandidate } from '../types/strategyTypes'
@@ -112,6 +113,17 @@ export function AssistantBot({
       const answer = (response.ok ? body : fallbackAssistantResponse(body.error || 'Qveris AI is unavailable.')) as AssistantChatResponse
       const updates = normalizeAssistantUpdates(answer.structuredUpdates)
       if (Object.keys(updates).length) onStructuredUpdates?.(updates)
+      if (response.ok) {
+        recordProductEvent({
+          eventName: 'assistant_used',
+          ticker,
+          properties: {
+            strategyId: selectedStrategy?.id,
+            strategyName: selectedStrategy?.name,
+            source: 'assistant',
+          },
+        })
+      }
       setMessages((current) => [
         ...current,
         { role: 'assistant', content: renderAssistantAnswer(answer, lang) },

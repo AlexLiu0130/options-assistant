@@ -2,6 +2,7 @@ import type { PaperOrder, PaperPosition, PaperPositionMark } from '../types/pape
 import type { StrategyCandidate } from '../types/strategyTypes'
 
 export type PaperPositionRow = PaperPosition & { mark?: PaperPositionMark }
+export type PaperStorage = 'local_file' | 'postgres'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init)
@@ -19,7 +20,7 @@ export async function submitPaperOrder({
   strategy: StrategyCandidate
   underlyingPrice?: number
 }) {
-  return request<{ order: PaperOrder; position?: PaperPosition; warnings?: string[] }>('/api/paper/orders', {
+  return request<{ order: PaperOrder; position?: PaperPosition; warnings?: string[]; storage: PaperStorage }>('/api/paper/orders', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ ticker, strategySnapshot: strategy, underlyingPrice }),
@@ -29,11 +30,11 @@ export async function submitPaperOrder({
 export function listPaperPositions(currentPrice?: number) {
   const params = new URLSearchParams({ status: 'all' })
   if (typeof currentPrice === 'number') params.set('currentPrice', String(currentPrice))
-  return request<{ positions: PaperPositionRow[] }>(`/api/paper/positions?${params}`)
+  return request<{ positions: PaperPositionRow[]; storage: PaperStorage }>(`/api/paper/positions?${params}`)
 }
 
 export function closePaperPosition(positionId: string, currentPrice: number) {
-  return request<{ position: PaperPosition; realizedPnL: number; warnings?: string[] }>(
+  return request<{ position: PaperPosition; realizedPnL: number; warnings?: string[]; storage: PaperStorage }>(
     `/api/paper/positions/${encodeURIComponent(positionId)}/close`,
     {
       method: 'POST',
@@ -64,7 +65,7 @@ export type PaperAccountResponse = {
   account: { id: string; userId: string; currency: 'USD'; initialCash: number; cashBalance: number; updatedAt: string }
   summary: PaperAccountSummary
   positions: PaperPositionRow[]
-  storage: 'local_file'
+  storage: PaperStorage
 }
 
 export function getPaperAccount(prices?: Record<string, number>) {
@@ -97,7 +98,7 @@ export async function getPaperAccountWithMarketPrices() {
 }
 
 export function resetPaperAccount(initialCash: number) {
-  return request<{ account: PaperAccountResponse['account']; clearedOrders: number; clearedPositions: number }>(
+  return request<PaperAccountResponse & { clearedOrders: number; clearedPositions: number }>(
     '/api/paper/account/reset',
     {
       method: 'POST',

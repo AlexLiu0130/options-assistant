@@ -16,6 +16,7 @@ import {
   resetPaperAccount,
   submitPaperOrder,
 } from './paperTradeRuntime.mjs'
+import { recordProductEvent } from './productEventsRuntime.mjs'
 import {
   isSupportedUnderlying,
   PREWARM_SYMBOLS,
@@ -858,44 +859,48 @@ async function handle(req, res) {
     }
 
     if (url.pathname === '/api/paper/orders' && req.method === 'POST') {
-      const result = submitPaperOrder(await readJson(req), Date.now(), authUser.sub)
+      const result = await submitPaperOrder(await readJson(req), Date.now(), authUser)
       return json(res, result.status, result.body)
     }
 
+    if (url.pathname === '/api/events' && req.method === 'POST') {
+      return json(res, 200, await recordProductEvent(await readJson(req), authUser))
+    }
+
     if (url.pathname === '/api/paper/orders' && req.method === 'GET') {
-      const result = listPaperOrders(authUser.sub)
+      const result = await listPaperOrders(authUser)
       return json(res, result.status, result.body)
     }
 
     if (url.pathname === '/api/paper/account' && req.method === 'GET') {
-      const result = getPaperAccount({
+      const result = await getPaperAccount({
         currentUnderlyingPrice: url.searchParams.get('currentUnderlyingPrice') ?? url.searchParams.get('currentPrice'),
         prices: parseJsonQuery(url.searchParams.get('prices')),
-      }, Date.now(), authUser.sub)
+      }, Date.now(), authUser)
       return json(res, result.status, result.body)
     }
 
     if (url.pathname === '/api/paper/account/mark' && req.method === 'POST') {
-      const result = getPaperAccount(await readJson(req), Date.now(), authUser.sub)
+      const result = await getPaperAccount(await readJson(req), Date.now(), authUser)
       return json(res, result.status, result.body)
     }
 
     if (url.pathname === '/api/paper/account/reset' && req.method === 'POST') {
-      const result = resetPaperAccount(await readJson(req), Date.now(), authUser.sub)
+      const result = await resetPaperAccount(await readJson(req), Date.now(), authUser)
       return json(res, result.status, result.body)
     }
 
     if (url.pathname === '/api/paper/positions' && req.method === 'GET') {
-      const result = listPaperPositions({
+      const result = await listPaperPositions({
         status: url.searchParams.get('status') || 'open',
         currentUnderlyingPrice: url.searchParams.get('currentUnderlyingPrice') ?? url.searchParams.get('currentPrice'),
-      }, authUser.sub)
+      }, authUser)
       return json(res, result.status, result.body)
     }
 
     const closeMatch = url.pathname.match(/^\/api\/paper\/positions\/([^/]+)\/close$/)
     if (closeMatch && req.method === 'POST') {
-      const result = closePaperPositionById(decodeURIComponent(closeMatch[1]), await readJson(req), Date.now(), authUser.sub)
+      const result = await closePaperPositionById(decodeURIComponent(closeMatch[1]), await readJson(req), Date.now(), authUser)
       return json(res, result.status, result.body)
     }
 

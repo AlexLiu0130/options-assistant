@@ -3,6 +3,7 @@ import type { MouseEvent } from 'react'
 import { LineChart, Loader2 } from 'lucide-react'
 import { money } from '../core/dashboardData'
 import { submitPaperOrder } from '../core/paperTradeApi'
+import { recordProductEvent } from '../core/productEventsApi'
 import { buildRiskChecklist } from '../core/riskChecklistEngine'
 import { assistantBriefText } from '../core/assistantPolicy'
 import { adjustStrategyLegs, type StrategyLegAdjustment } from '../core/strategyAdjustmentEngine'
@@ -193,6 +194,13 @@ export function StrategyCard({
   const canAdjust = !!optionChain && !!parsedView && optionChain.status === 'available' && strategy.legs.length > 0
 
   function select() {
+    if (!selected) {
+      recordProductEvent({
+        eventName: 'strategy_opened',
+        ticker,
+        properties: { strategyId: strategy.id, strategyName: strategy.name, source: 'strategy_card' },
+      })
+    }
     onSelect?.(strategy)
   }
 
@@ -357,7 +365,7 @@ export function StrategyCard({
               }}
             />
           )}
-          {activeTab === 'sim' && <StrategySimulator strategy={displayStrategy} onProjectionChange={onProjectionChange} />}
+          {activeTab === 'sim' && <StrategySimulator strategy={displayStrategy} ticker={ticker} onProjectionChange={onProjectionChange} />}
           {activeTab === 'greeks' && <GreeksQuadChart strategy={displayStrategy} underlyingPrice={underlyingPrice} />}
           {activeTab === 'explain' && explanation ? <BriefContent text={explanation} isError={explainState === 'error'} lang={lang} ticker={ticker} /> : null}
           <div className="tile-actions">

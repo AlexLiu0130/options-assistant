@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   ArrowDownRight,
@@ -25,6 +25,7 @@ import type { ActiveSimulatorState } from './core/simulatorChartEngine'
 import { optionExpirations } from './core/dashboardData'
 import { selectDefaultExpiration } from './core/expirationEngine'
 import { parseUserView } from './core/parseUserView'
+import { recordProductEvent } from './core/productEventsApi'
 import { recommendStrategyTypes } from './core/strategyRecommendationEngine'
 import { isSupportedUnderlying } from './core/supportedUnderlyings'
 import { useT } from './i18n'
@@ -287,23 +288,32 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
   const unsupportedTicker = Boolean(ticker && !isSupportedUnderlying(ticker))
   const [market, setMarket] = useState<LoadState<QverisMarketSnapshot>>({})
   const [options, setOptions] = useState<LoadState<QverisOptionsResponse>>({})
+  const recordedDataFailures = useRef(new Set<string>())
   const dataIssues = dataIssueMessages({ market, options })
 
   useEffect(() => {
+    recordedDataFailures.current.clear()
     if (ticker && !unsupportedTicker) saveLastTicker(ticker)
   }, [ticker, unsupportedTicker])
+
+  const recordDataFailure = useCallback((errorCategory: 'QVERIS_MARKET_ERROR' | 'QVERIS_OPTIONS_ERROR') => {
+    const key = `${ticker}:${errorCategory}`
+    if (recordedDataFailures.current.has(key)) return
+    recordedDataFailures.current.add(key)
+    recordProductEvent({ eventName: 'data_request_failed', ticker, errorCategory })
+  }, [ticker])
 
   useEffect(() => {
     if (!ticker || unsupportedTicker) { setMarket({}); return }
     let cancelled = false
     const load = () => fetchJson<QverisMarketSnapshot>(`/api/market/${ticker}?range=${priceRange}`, { force: true })
       .then((data) => { if (!cancelled) { setMarket({ data }); setDataPulse((n) => n + 1) } })
-      .catch((error: Error) => { if (!cancelled) setMarket({ error: error.message }) })
+      .catch((error: Error) => { if (!cancelled) { setMarket({ error: error.message }); recordDataFailure('QVERIS_MARKET_ERROR') } })
     setMarket({})
     void load()
     const timer = window.setInterval(() => void load(), marketPollMs)
     return () => { cancelled = true; window.clearInterval(timer) }
-  }, [priceRange, ticker, unsupportedTicker])
+  }, [priceRange, ticker, unsupportedTicker, recordDataFailure])
 
   useEffect(() => {
     if (!ticker || unsupportedTicker) return
@@ -325,12 +335,12 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
     let cancelled = false
     const load = () => fetchJson<QverisOptionsResponse>(`/api/options/${ticker}`, { force: true })
       .then((data) => { if (!cancelled) { setOptions({ data }); setDataPulse((n) => n + 1) } })
-      .catch((error: Error) => { if (!cancelled) setOptions({ error: error.message }) })
+      .catch((error: Error) => { if (!cancelled) { setOptions({ error: error.message }); recordDataFailure('QVERIS_OPTIONS_ERROR') } })
     setOptions({})
     void load()
     const timer = window.setInterval(() => void load(), optionsPollMs)
     return () => { cancelled = true; window.clearInterval(timer) }
-  }, [ticker, unsupportedTicker])
+  }, [ticker, unsupportedTicker, recordDataFailure])
 
   useEffect(() => {
     setStrategyOverrides({})
@@ -448,7 +458,16 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
   function submit(event: FormEvent) {
     event.preventDefault()
     const next = { ...form, ticker: form.ticker.trim().toUpperCase() }
-    if (next.ticker) navigate(lastTradePath(next.ticker))
+    if (next.ticker) {
+      navigate(lastTradePath(next.ticker))
+      if (isSupportedUnderlying(next.ticker)) {
+        recordProductEvent({
+          eventName: 'ticker_searched',
+          ticker: next.ticker,
+          properties: { source: 'topbar', page: 'trade' },
+        })
+      }
+    }
     setSubmitted(profileApplied ? next : unappliedProfile(next))
   }
 

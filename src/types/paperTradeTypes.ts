@@ -1,6 +1,6 @@
 import type { StrategyCandidate, StrategyLeg } from './strategyTypes'
 
-export type PaperOrderStatus = 'submitted' | 'filled' | 'cancelled' | 'rejected'
+export type PaperOrderStatus = 'pending' | 'partially_filled' | 'filled' | 'cancelled' | 'rejected'
 export type PaperPositionStatus = 'open' | 'closed'
 
 export type PaperTradeFillSnapshot = {

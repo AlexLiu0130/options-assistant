@@ -53,16 +53,16 @@ SERVE_STATIC=
 
 ### Authentication
 
-There is no login system yet.
+The application uses QVeris external OAuth as a confidential server-side Web
+client. It discovers endpoints, runs Authorization Code + S256 PKCE, validates
+the ID Token and Account Resource UserInfo response, and issues an HttpOnly
+application session cookie whose lifetime does not exceed the OAuth token.
 
-Before a public server deployment, the project needs:
-
-- Login page.
-- User identity.
-- Session or token handling.
-- Protected routes for paper portfolio and user-specific data.
-- Server-side user authorization checks.
-- Logout flow.
+Before deployment, register a distinct client for the target environment,
+configure the exact HTTPS callback and Account Resource, provision invitations,
+and store the client/session secrets in deployment secret management. All API
+routes except health and the auth endpoints require a valid application
+session. Logout clears the application session.
 
 ### User Data Persistence
 
@@ -125,7 +125,8 @@ Do not expose:
 
 - `QVERIS_API_KEY`
 - `DEEPSEEK_API_KEY`
-- Any future auth/session signing secret.
+- `QVERIS_OAUTH_CLIENT_SECRET`
+- `QVERIS_OAUTH_SESSION_SECRET`
 
 `.env.local` is local-only and must not be deployed or committed.
 
@@ -186,8 +187,9 @@ npm run check
 
 ## Suggested Deployment Readiness Checklist
 
-- [ ] Add login page.
-- [ ] Add backend auth/session validation.
+- [x] Add QVeris OAuth login and logout UI.
+- [x] Add backend session validation and protected API routes.
+- [ ] Register the production OAuth client, exact callback and invitation policy.
 - [ ] Replace local paper-trade file storage.
 - [ ] Configure production API URL/reverse proxy.
 - [ ] Configure production host and CORS origin.

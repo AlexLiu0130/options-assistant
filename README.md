@@ -43,7 +43,16 @@ Set the required keys in `.env.local`:
 ```bash
 QVERIS_API_KEY=
 DEEPSEEK_API_KEY=
+QVERIS_AUTH_BASE_URL=http://localhost:3000
+QVERIS_OAUTH_CLIENT_ID=options-assistant-local
+QVERIS_OAUTH_CLIENT_SECRET=
+QVERIS_OAUTH_SESSION_SECRET=
+QVERIS_OAUTH_REDIRECT_URI=http://127.0.0.1:8787/auth/callback
+QVERIS_OAUTH_RESOURCE=http://localhost:3000/account
+QVERIS_OAUTH_SCOPES=openid profile email
 ```
+
+The OAuth client and invited users must first be provisioned in qveris.ai. The application is a confidential server-side Web client: it discovers OAuth endpoints, uses Authorization Code + S256 PKCE, requests the Account Resource, validates the signed ID token and UserInfo response, and gives the browser only an HttpOnly application session cookie. The local session never outlives the OAuth access token. Paper-trading data is isolated by the QVeris user `sub` claim.
 
 The frontend runs on Vite and proxies `/api/*` to the local API server at `http://127.0.0.1:8787`.
 

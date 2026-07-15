@@ -404,6 +404,8 @@ function leg(action: 'buy' | 'sell', contract: QverisOptionContract): StrategyLe
     expiration: contract.expiration,
     quantity: 1,
     premium: mid(contract),
+    bid: contract.bid ?? undefined,
+    ask: contract.ask ?? undefined,
     impliedVolatility: contract.impliedVolatility ?? undefined,
     delta: contract.delta,
     gamma: contract.gamma,

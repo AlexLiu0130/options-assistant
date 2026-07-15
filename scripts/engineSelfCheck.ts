@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { strategyExpirationPayoff } from '../src/core/payoffEngine.ts'
-import { closePaperPosition, fillPaperOrder, markPaperPosition } from '../src/core/paperTradeEngine.ts'
+import { buildPaperTradeCostBreakdown, closePaperPosition, estimateIbkrUsOptionsFees, fillPaperOrder, markPaperPosition } from '../src/core/paperTradeEngine.ts'
 import { selectDefaultExpiration } from '../src/core/expirationEngine.ts'
 import { buildRiskChecklist } from '../src/core/riskChecklistEngine.ts'
 import { buildScenarioRows } from '../src/core/scenarioEngine.ts'
@@ -23,6 +23,23 @@ const spread: StrategyLeg[] = [
   { action: 'sell', right: 'call', strike: 110, expiration: '2026-07-17', quantity: 1, premium: 2, impliedVolatility: 0.25 },
 ]
 assert.equal(strategyExpirationPayoff(spread, 120), 700)
+
+const quotedSpread: StrategyLeg[] = [
+  { action: 'buy', right: 'call', strike: 100, expiration: '2026-07-17', quantity: 1, premium: 1.1, bid: 1, ask: 1.2 },
+  { action: 'sell', right: 'call', strike: 110, expiration: '2026-07-17', quantity: 1, premium: 0.08, bid: 0.07, ask: 0.09 },
+]
+const quotedCost = buildPaperTradeCostBreakdown(quotedSpread)
+assert.equal(quotedCost.grossDebit, 120)
+assert.equal(quotedCost.grossCredit, 7)
+assert.equal(quotedCost.netPremium, 113)
+assert.equal(quotedCost.fees.commission, 1.15)
+assert.equal(quotedCost.fees.contractCount, 2)
+assert.equal(quotedCost.openingCashImpact, 114.25)
+assert.equal(quotedCost.usedMidpointFallback, false)
+const pennyFee = estimateIbkrUsOptionsFees([{ ...quotedSpread[0], premium: 0.03, bid: 0.02, ask: 0.03 }])
+assert.equal(pennyFee.commissionBeforeMinimum, 0.25)
+assert.equal(pennyFee.commission, 1)
+assert.equal(pennyFee.commissionMinimumApplied, true)
 assert.ok((probabilityOfProfit([
   { action: 'buy', right: 'call', strike: 200, expiration: '2027-07-17', quantity: 1, premium: 1 },
 ], 100, 1, 365) ?? 0) > 0)

@@ -1194,6 +1194,118 @@
   margin-left: auto;
 }
 
+/* ─── Strategy trade cost sheet ───────────────────────────────── */
+.trade-cost-sheet {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.trade-cost-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.trade-cost-head > div { display: grid; gap: 2px; }
+.trade-cost-head strong { font-size: 11.5px; color: var(--text); }
+.trade-cost-head span,
+.trade-cost-head em {
+  font-size: 9.5px;
+  color: var(--muted);
+  font-style: normal;
+}
+.trade-cost-head em {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+.trade-cost-table { padding: 2px 0; }
+.trade-cost-row {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) 66px 76px;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 5px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+.trade-cost-row:last-child { border-bottom: 0; }
+.trade-cost-labels {
+  min-height: 26px;
+  padding-block: 4px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.trade-cost-row > strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trade-cost-row > strong em { color: var(--muted); font-style: normal; font-weight: 500; }
+.trade-cost-row > b {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-align: right;
+}
+.trade-cost-quote { display: grid; gap: 1px; color: var(--muted); font-size: 9px; }
+.trade-cost-quote b { color: var(--text); font-family: var(--font-mono); font-size: 10.5px; font-weight: 600; }
+.cash-debit { color: var(--loss) !important; }
+.cash-credit { color: var(--profit) !important; }
+.trade-cost-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0;
+  margin: 8px 10px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.trade-cost-summary > div { padding: 7px 8px; background: var(--surface-2); }
+.trade-cost-summary > div + div { border-left: 1px solid var(--border); }
+.trade-cost-summary span,
+.trade-fee-list span { display: block; color: var(--muted); font-size: 9px; }
+.trade-cost-summary strong { display: block; margin-top: 2px; color: var(--text); font-family: var(--font-mono); font-size: 11px; }
+.trade-fee-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 14px;
+  padding: 9px 10px;
+}
+.trade-fee-list > div { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.trade-fee-list strong { color: var(--text); font-family: var(--font-mono); font-size: 10.5px; font-weight: 600; }
+.trade-cost-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 10px;
+  padding: 9px 10px;
+  border-radius: 6px;
+}
+.trade-cost-total.debit { background: var(--loss-soft); }
+.trade-cost-total.credit { background: var(--accent-soft); }
+.trade-cost-total span { color: var(--muted); font-size: 10.5px; font-weight: 700; }
+.trade-cost-total strong { font-family: var(--font-mono); font-size: 14px; }
+.trade-cost-total.debit strong { color: var(--loss); }
+.trade-cost-total.credit strong { color: var(--profit); }
+.trade-cost-note { margin: 8px 10px 10px; color: var(--muted); font-size: 9.5px; line-height: 1.45; }
+
 /* ─── Paper plan ticket ───────────────────────────────────────── */
 .terminal-section.ticket-panel {
   border: 1px solid var(--border);
@@ -3510,6 +3622,17 @@
   .tile-expanded {
     padding: 11px;
   }
+  .trade-cost-row {
+    grid-template-columns: 72px minmax(0, 1fr) 60px;
+    gap: 5px;
+    padding-inline: 8px;
+  }
+  .trade-cost-row > :last-child { grid-column: 3; }
+  .trade-cost-row > strong { font-size: 9.5px; }
+  .trade-cost-row > b { font-size: 10px; }
+  .trade-cost-quote { display: none; }
+  .trade-cost-labels > :nth-child(3) { display: none; }
+  .trade-fee-list { grid-template-columns: 1fr; gap: 4px; }
   .legs > div,
   .ticket-simulator strong,
   .sim-value {

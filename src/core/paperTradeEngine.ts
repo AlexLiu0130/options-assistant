@@ -7,8 +7,7 @@ const PAPER_TRADE_WARNING = 'This is a simulated paper trade, not a real brokera
 const PAPER_TRADE_THEORETICAL_MARK_WARNING =
   'Paper positions are marked with a theoretical model from the underlying price, not live tradable option quotes.'
 const PAPER_TRADE_FEE_DISCLOSURE =
-  'IBKR-like US options fee estimate: $0.65/contract with $1.00 minimum, plus estimated ORF/OCC/CAT/SEC/TAF where applicable. Slippage is not modeled.'
-const OPTION_COMMISSION_PER_CONTRACT = 0.65
+  'IBKR Pro-like U.S. options estimate for a customer account with <=10,000 monthly contracts. It uses buy-at-ask and sell-at-bid when available, plus ORF/OCC/CAT and sell-side SEC/TAF. Exchange routing fees, rebates, and slippage are not modeled.'
 const OPTION_MIN_COMMISSION_PER_ORDER = 1
 const ORF_PER_CONTRACT = 0.02295
 const OCC_PER_CONTRACT = 0.025
@@ -18,6 +17,30 @@ const FINRA_TAF_PER_SELL_CONTRACT = 0.00329
 
 function roundMoney(value: number) {
   return Number(value.toFixed(2))
+}
+
+function commissionRate(premium: number) {
+  if (premium < 0.05) return 0.25
+  if (premium < 0.1) return 0.5
+  return 0.65
+}
+
+function executionAction(leg: StrategyLeg, side: 'open' | 'close') {
+  if (side === 'open') return leg.action
+  return leg.action === 'buy' ? 'sell' : 'buy'
+}
+
+export function executableLegPremium(leg: StrategyLeg, side: 'open' | 'close' = 'open') {
+  const action = executionAction(leg, side)
+  const quote = action === 'buy' ? leg.ask : leg.bid
+  if (typeof quote === 'number' && Number.isFinite(quote) && quote > 0) {
+    return { premium: quote, source: action === 'buy' ? 'ask' as const : 'bid' as const }
+  }
+  return { premium: leg.premium ?? 0, source: 'midpoint_fallback' as const }
+}
+
+export function priceStrategyForExecution(legs: StrategyLeg[], side: 'open' | 'close' = 'open') {
+  return legs.map((leg) => ({ ...leg, premium: executableLegPremium(leg, side).premium }))
 }
 
 function isoNow(now = Date.now()) {
@@ -89,24 +112,74 @@ function capitalBase(position: PaperPosition) {
 }
 
 export function estimateIbkrUsOptionsFees(legs: StrategyLeg[], quantity = 1, side: 'open' | 'close' = 'open') {
-  const contractCount = legs.reduce((sum, leg) => sum + leg.quantity * quantity, 0)
-  const sellValue = legs
-    .filter((leg) => (side === 'open' ? leg.action === 'sell' : leg.action === 'buy'))
+  const pricedLegs = priceStrategyForExecution(legs, side)
+  const contractCount = pricedLegs.reduce((sum, leg) => sum + leg.quantity * quantity, 0)
+  const commissionBeforeMinimum = pricedLegs.reduce(
+    (sum, leg) => sum + commissionRate(leg.premium ?? 0) * leg.quantity * quantity,
+    0,
+  )
+  const commission = Math.max(OPTION_MIN_COMMISSION_PER_ORDER, commissionBeforeMinimum)
+  const sellValue = pricedLegs
+    .filter((leg) => executionAction(leg, side) === 'sell')
     .reduce((sum, leg) => sum + (leg.premium ?? 0) * leg.quantity * quantity * 100, 0)
-  const sellContracts = legs
-    .filter((leg) => (side === 'open' ? leg.action === 'sell' : leg.action === 'buy'))
+  const sellContracts = pricedLegs
+    .filter((leg) => executionAction(leg, side) === 'sell')
     .reduce((sum, leg) => sum + leg.quantity * quantity, 0)
-  const commission = Math.max(OPTION_MIN_COMMISSION_PER_ORDER, contractCount * OPTION_COMMISSION_PER_CONTRACT)
-  const thirdParty =
-    contractCount * (ORF_PER_CONTRACT + OCC_PER_CONTRACT + CAT_PER_CONTRACT) +
-    sellValue * SEC_SALE_RATE +
-    sellContracts * FINRA_TAF_PER_SELL_CONTRACT
+  const optionsRegulatoryFee = contractCount * ORF_PER_CONTRACT
+  const occClearingFee = contractCount * OCC_PER_CONTRACT
+  const catFee = contractCount * CAT_PER_CONTRACT
+  const secTransactionFee = sellValue * SEC_SALE_RATE
+  const finraTradingActivityFee = sellContracts * FINRA_TAF_PER_SELL_CONTRACT
+  const thirdParty = optionsRegulatoryFee + occClearingFee + catFee + secTransactionFee + finraTradingActivityFee
   return {
     commission: roundMoney(commission),
     thirdParty: roundMoney(thirdParty),
     total: roundMoney(commission + thirdParty),
+    contractCount,
+    commissionBeforeMinimum: roundMoney(commissionBeforeMinimum),
+    commissionMinimumApplied: commissionBeforeMinimum < OPTION_MIN_COMMISSION_PER_ORDER,
+    optionsRegulatoryFee: roundMoney(optionsRegulatoryFee),
+    occClearingFee: roundMoney(occClearingFee),
+    catFee: roundMoney(catFee),
+    secTransactionFee: roundMoney(secTransactionFee),
+    finraTradingActivityFee: roundMoney(finraTradingActivityFee),
     model: 'ibkr_us_options_estimate' as const,
     disclosure: PAPER_TRADE_FEE_DISCLOSURE,
+  }
+}
+
+export function buildPaperTradeCostBreakdown(legs: StrategyLeg[], quantity = 1) {
+  const pricedLegs = priceStrategyForExecution(legs)
+  const rows = pricedLegs.map((leg, index) => {
+    const price = leg.premium ?? 0
+    const cashFlow = roundMoney((leg.action === 'buy' ? 1 : -1) * price * leg.quantity * quantity * 100)
+    return {
+      id: `${leg.action}-${leg.right}-${leg.expiration}-${leg.strike}-${index}`,
+      action: leg.action,
+      right: leg.right,
+      expiration: leg.expiration,
+      strike: leg.strike,
+      quantity: leg.quantity * quantity,
+      price,
+      priceSource: executableLegPremium(legs[index]).source,
+      cashFlow,
+      symbol: leg.symbol,
+    }
+  })
+  const grossDebit = roundMoney(rows.filter((row) => row.cashFlow > 0).reduce((sum, row) => sum + row.cashFlow, 0))
+  const grossCredit = roundMoney(Math.abs(rows.filter((row) => row.cashFlow < 0).reduce((sum, row) => sum + row.cashFlow, 0)))
+  const netPremium = roundMoney(grossDebit - grossCredit)
+  const fees = estimateIbkrUsOptionsFees(legs, quantity)
+  const openingCashImpact = roundMoney(netPremium + fees.total)
+  return {
+    rows,
+    contractCount: rows.reduce((sum, row) => sum + row.quantity, 0),
+    grossDebit,
+    grossCredit,
+    netPremium,
+    fees,
+    openingCashImpact,
+    usedMidpointFallback: rows.some((row) => row.priceSource === 'midpoint_fallback'),
   }
 }
 
@@ -146,14 +219,15 @@ export function buildPaperFillSnapshot({
   quantity?: number
   now?: number
 }): PaperTradeFillSnapshot {
-  const daysLeft = daysUntilEarliestLegExpiration(strategy.legs, now)
-  const risk = estimateExpirationRisk(strategy.legs)
+  const executionLegs = priceStrategyForExecution(strategy.legs)
+  const daysLeft = daysUntilEarliestLegExpiration(executionLegs, now)
+  const risk = estimateExpirationRisk(executionLegs)
   return {
     asOf: isoNow(now),
     underlyingPrice: roundMoney(underlyingPrice),
     daysLeft,
-    strategyValue: strategyEntryValue(strategy.legs),
-    fees: estimateIbkrUsOptionsFees(strategy.legs, quantity),
+    strategyValue: strategyEntryValue(executionLegs),
+    fees: estimateIbkrUsOptionsFees(executionLegs, quantity),
     maxLoss: risk.maxLoss,
     maxProfit: risk.maxProfit,
     breakevens: breakevens(strategy),
@@ -204,8 +278,9 @@ export function fillPaperOrder({
     return { order, position: undefined, warnings: validationGaps }
   }
 
-  const fillSnapshot = buildPaperFillSnapshot({ strategy, underlyingPrice, quantity, now })
-  const order: PaperOrder = { ...orderBase, status: 'filled', filledAt: submittedAt, fillSnapshot }
+  const executionStrategy = { ...strategy, legs: priceStrategyForExecution(strategy.legs) }
+  const fillSnapshot = buildPaperFillSnapshot({ strategy: executionStrategy, underlyingPrice, quantity, now })
+  const order: PaperOrder = { ...orderBase, status: 'filled', filledAt: submittedAt, fillSnapshot, strategySnapshot: executionStrategy }
   const position: PaperPosition = {
     id: paperId('paper-position', now),
     userId,
@@ -217,8 +292,8 @@ export function fillPaperOrder({
     quantity,
     openedAt: submittedAt,
     entrySnapshot: fillSnapshot,
-    strategySnapshot: strategy,
-    legsSnapshot: strategy.legs,
+    strategySnapshot: executionStrategy,
+    legsSnapshot: executionStrategy.legs,
   }
   return { order, position, warnings: fillSnapshot.dataGaps }
 }

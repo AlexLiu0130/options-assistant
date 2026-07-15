@@ -50,6 +50,8 @@ function withContract(leg: StrategyLeg, contract: QverisOptionContract): Strateg
   return {
     ...leg,
     premium: mid(contract),
+    bid: contract.bid ?? undefined,
+    ask: contract.ask ?? undefined,
     impliedVolatility: contract.impliedVolatility ?? leg.impliedVolatility,
     delta: contract.delta,
     gamma: contract.gamma,

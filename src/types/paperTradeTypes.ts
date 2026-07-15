@@ -68,6 +68,14 @@ export type PaperTradeFees = {
   commission: number
   thirdParty: number
   total: number
+  contractCount: number
+  commissionBeforeMinimum: number
+  commissionMinimumApplied: boolean
+  optionsRegulatoryFee: number
+  occClearingFee: number
+  catFee: number
+  secTransactionFee: number
+  finraTradingActivityFee: number
   model: 'ibkr_us_options_estimate'
   disclosure: string
 }

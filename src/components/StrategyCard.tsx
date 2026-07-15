@@ -1,12 +1,13 @@
 import { useState, useMemo } from 'react'
 import type { MouseEvent } from 'react'
-import { LineChart, Loader2 } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { money } from '../core/dashboardData'
 import { submitPaperOrder } from '../core/paperTradeApi'
 import { recordProductEvent } from '../core/productEventsApi'
 import { buildRiskChecklist } from '../core/riskChecklistEngine'
 import { assistantBriefText } from '../core/assistantPolicy'
 import { adjustStrategyLegs, type StrategyLegAdjustment } from '../core/strategyAdjustmentEngine'
+import { buildPaperTradeCostBreakdown } from '../core/paperTradeEngine'
 import { useT } from '../i18n'
 import type { StrategyCandidate } from '../types/strategyTypes'
 import type { QverisOptionsResponse, QverisOptionContract } from '../types/optionTypes'
@@ -51,6 +52,77 @@ function mid(c: QverisOptionContract) {
   if (typeof c.bid === 'number' && typeof c.ask === 'number' && c.bid >= 0 && c.ask > 0 && c.ask >= c.bid)
     return (c.bid + c.ask) / 2
   return typeof c.last === 'number' && c.last > 0 ? c.last : undefined
+}
+
+function signedCashFlow(value: number) {
+  return `${value >= 0 ? '+' : '−'}${money(Math.abs(value))}`
+}
+
+function TradeCostSheet({ strategy, ticker, lang }: { strategy: StrategyCandidate; ticker?: string; lang: string }) {
+  const breakdown = useMemo(() => buildPaperTradeCostBreakdown(strategy.legs), [strategy.legs])
+  const zh = lang === 'zh'
+  const openingIsDebit = breakdown.openingCashImpact >= 0
+  const currency = (value: number) => money(value)
+  const contractName = (row: typeof breakdown.rows[number]) =>
+    `${(ticker ?? row.symbol?.replace(/\d.*$/, '') ?? '').toUpperCase()} ${row.expiration} ${row.strike} ${row.right.toUpperCase()}`.trim()
+
+  return (
+    <section className="trade-cost-sheet" aria-label={zh ? '交易费用明细' : 'Trade cost breakdown'}>
+      <div className="trade-cost-head">
+        <div>
+          <strong>{zh ? '交易费用明细' : 'Trade cost breakdown'}</strong>
+          <span>{zh ? `${breakdown.contractCount} 张合约 · 每张 100 股` : `${breakdown.contractCount} contracts · 100 shares each`}</span>
+        </div>
+        <em>{zh ? '开仓估算' : 'Opening estimate'}</em>
+      </div>
+
+      <div className="trade-cost-table" role="table">
+        <div className="trade-cost-row trade-cost-labels" role="row">
+          <span>{zh ? '方向' : 'Action'}</span>
+          <span>{zh ? '合约' : 'Contract'}</span>
+          <span>{zh ? '报价' : 'Quote'}</span>
+          <span>{zh ? '现金流' : 'Cash flow'}</span>
+        </div>
+        {breakdown.rows.map((row) => (
+          <div className="trade-cost-row" key={row.id} role="row">
+            <span className={row.action === 'buy' ? 'buy-tag' : 'sell-tag'}>
+              {row.action === 'buy' ? (zh ? '买入开仓' : 'Buy to open') : (zh ? '卖出开仓' : 'Sell to open')}
+            </span>
+            <strong>{contractName(row)} <em>× {row.quantity}</em></strong>
+            <span className="trade-cost-quote">
+              {row.priceSource === 'ask' ? (zh ? '卖一' : 'Ask') : row.priceSource === 'bid' ? (zh ? '买一' : 'Bid') : (zh ? '中间价' : 'Mid')}
+              <b>{currency(row.price)}</b>
+            </span>
+            <b className={row.cashFlow > 0 ? 'cash-debit' : 'cash-credit'}>{signedCashFlow(row.cashFlow)}</b>
+          </div>
+        ))}
+      </div>
+
+      <div className="trade-cost-summary">
+        <div><span>{zh ? '买入权利金' : 'Buy premium'}</span><strong>{currency(breakdown.grossDebit)}</strong></div>
+        <div><span>{zh ? '卖出权利金' : 'Sell credit'}</span><strong className="cash-credit">−{currency(breakdown.grossCredit)}</strong></div>
+        <div><span>{zh ? '净权利金' : 'Net premium'}</span><strong className={breakdown.netPremium >= 0 ? 'cash-debit' : 'cash-credit'}>{signedCashFlow(breakdown.netPremium)}</strong></div>
+      </div>
+
+      <div className="trade-fee-list">
+        <div><span>{zh ? '佣金' : 'Commission'}</span><strong>{currency(breakdown.fees.commission)}</strong></div>
+        <div><span>{zh ? 'ORF 监管费' : 'ORF'}</span><strong>{currency(breakdown.fees.optionsRegulatoryFee)}</strong></div>
+        <div><span>{zh ? 'OCC 清算费' : 'OCC clearing'}</span><strong>{currency(breakdown.fees.occClearingFee)}</strong></div>
+        <div><span>{zh ? 'CAT 审计费' : 'CAT'}</span><strong>{currency(breakdown.fees.catFee)}</strong></div>
+        <div><span>{zh ? '卖出方 SEC / FINRA' : 'Sell-side SEC / FINRA'}</span><strong>{currency(breakdown.fees.secTransactionFee + breakdown.fees.finraTradingActivityFee)}</strong></div>
+      </div>
+
+      <div className={`trade-cost-total ${openingIsDebit ? 'debit' : 'credit'}`}>
+        <span>{openingIsDebit ? (zh ? '预计开仓总支出' : 'Est. opening cash required') : (zh ? '预计开仓净收款' : 'Est. opening net credit')}</span>
+        <strong>{currency(Math.abs(breakdown.openingCashImpact))}</strong>
+      </div>
+      <p className="trade-cost-note">
+        {breakdown.usedMidpointFallback
+          ? (zh ? '部分腿缺少有效 Bid/Ask，已用中间价估算。实际成交价和交易所路由费用可能不同。' : 'Some legs lack a usable bid/ask, so midpoint pricing is used. Actual fills and venue fees may differ.')
+          : (zh ? '买入按 Ask、卖出按 Bid 估算。交易所路由费、返佣与滑点不在此模型中。' : 'Buys use Ask and sells use Bid. Venue routing fees, rebates, and slippage are not modeled.')}
+      </p>
+    </section>
+  )
 }
 
 function LegEditor({
@@ -340,18 +412,7 @@ export function StrategyCard({
                   {strategy.rankWarnings?.map((warning) => <em key={warning}>{rankText(warning, lang)}</em>)}
                 </div>
               ) : null}
-              <div className="legs">
-                {displayStrategy.legs.map((leg) => (
-                  <div key={`${leg.action}-${leg.symbol ?? leg.strike}`}>
-                    <LineChart size={12} />
-                    <span className={leg.action === 'buy' ? 'buy-tag' : 'sell-tag'}>
-                      {leg.action === 'buy' ? t.card.buyToOpen : t.card.sellToOpen}
-                    </span>
-                    <strong>{leg.quantity} {leg.right} {money(leg.strike)} · {leg.expiration}</strong>
-                    <em>{money(leg.premium)}</em>
-                  </div>
-                ))}
-              </div>
+              <TradeCostSheet strategy={displayStrategy} ticker={ticker} lang={lang} />
             </>
           )}
           {activeTab === 'adjust' && canAdjust && (

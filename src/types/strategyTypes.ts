@@ -50,6 +50,8 @@ export interface StrategyLeg {
   expiration: string
   quantity: number
   premium?: number
+  bid?: number
+  ask?: number
   impliedVolatility?: number
   delta?: number | null
   gamma?: number | null

@@ -17,6 +17,7 @@ import {
   submitPaperOrder,
 } from './paperTradeRuntime.mjs'
 import { recordProductEvent } from './productEventsRuntime.mjs'
+import { getAdminAnalytics } from './adminAnalyticsRuntime.mjs'
 import {
   isSupportedUnderlying,
   PREWARM_SYMBOLS,
@@ -50,6 +51,12 @@ const heavyLimit = Number(process.env.QVERIS_HEAVY_CONCURRENCY || 4)
 const prewarmEnabled = process.env.QVERIS_PREWARM_ENABLED !== 'false'
 const prewarmIntervalMs = Number(process.env.QVERIS_PREWARM_INTERVAL_MS || 15000)
 const authBaseUrl = String(process.env.QVERIS_AUTH_BASE_URL || 'https://qveris.ai').replace(/\/$/, '')
+const adminEmails = new Set(
+  String(process.env.OPTIONS_ASSISTANT_ADMIN_EMAILS || '')
+    .split(',')
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean),
+)
 const authRuntime = createAuthRuntime({
   authBaseUrl,
   clientId: process.env.QVERIS_OAUTH_CLIENT_ID || '',
@@ -146,6 +153,15 @@ function safeError(message = 'QVeris request failed.', status = 502) {
   error.status = status
   error.expose = true
   return error
+}
+
+function isAdmin(user) {
+  const email = String(typeof user === 'object' && user ? user.email : '').trim().toLowerCase()
+  return Boolean(email && adminEmails.has(email))
+}
+
+function requireAdmin(user) {
+  if (!isAdmin(user)) throw safeError('Administrator access is required.', 403)
 }
 
 function toNumber(value) {
@@ -856,6 +872,11 @@ async function handle(req, res) {
 
     if (url.pathname === '/api/supported-underlyings') {
       return json(res, 200, supportedUniversePayload())
+    }
+
+    if (url.pathname === '/api/admin/analytics' && req.method === 'GET') {
+      requireAdmin(authUser)
+      return json(res, 200, await getAdminAnalytics(url.searchParams.get('days') || 7))
     }
 
     if (url.pathname === '/api/paper/orders' && req.method === 'POST') {

@@ -39,6 +39,9 @@ const PaperPortfolioPage = lazy(() =>
 const StrategyEducationPage = lazy(() =>
   import('./components/StrategyEducationPage').then((module) => ({ default: module.StrategyEducationPage })),
 )
+const AdminDashboardPage = lazy(() =>
+  import('./components/AdminDashboardPage').then((module) => ({ default: module.AdminDashboardPage })),
+)
 const UnderlyingPriceChart = lazy(() =>
   import('./components/UnderlyingPriceChart').then((module) => ({ default: module.UnderlyingPriceChart })),
 )
@@ -252,6 +255,9 @@ function AuthenticatedApp() {
   }
   if (hash === '#/learn') {
     return <Suspense fallback={<div className="app-loading">{t.builder.pending}</div>}><StrategyEducationPage theme={theme} onToggleTheme={toggleTheme} /></Suspense>
+  }
+  if (hash === '#/admin') {
+    return <Suspense fallback={<div className="app-loading">{t.builder.pending}</div>}><AdminDashboardPage theme={theme} onToggleTheme={toggleTheme} /></Suspense>
   }
   if (hash.startsWith('#/trade')) {
     const params = new URLSearchParams(hash.split('?')[1] ?? '')

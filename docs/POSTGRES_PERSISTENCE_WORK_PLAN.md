@@ -79,6 +79,8 @@ POST /api/paper/positions/:id/close
 
 新增受登录保护的 `POST /api/events`。新增只读 `npm run report:events -- --days=7`，输出事件量、关注标的和策略关注度的聚合 JSON，供内测运营读取；不输出聊天内容或用户原始输入。
 
+同时提供受 `OPTIONS_ASSISTANT_ADMIN_EMAILS` 白名单保护的 `#/admin` 可视化运营看板，展示聚合的活跃用户、功能使用、热门标的、策略关注度和数据失败次数。该页面不展示个人交易明细、对话内容或原始输入。
+
 只接受以下事件：
 
 - `ticker_searched`

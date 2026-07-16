@@ -1092,8 +1092,10 @@ async function handle(req, res) {
       const ticker = tickerFromPath(url.pathname, '/api/options/')
       if (!ticker) throw safeError('Ticker is required.', 400)
       requireSupportedTicker(ticker)
-      const useTheta = url.searchParams.get('live') === '1' || isUsRegularMarketOpen()
-      const cacheKey = `${ticker}:${useTheta ? 'open' : 'closed'}`
+      const marketOpen = isUsRegularMarketOpen()
+      // Theta is the primary chain source in every session; market hours only change refresh behavior.
+      const useTheta = true
+      const cacheKey = `${ticker}:${marketOpen ? 'open' : 'closed'}`
       const cachedBody = cached(optionsCache, 'options', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)
       try {
@@ -1164,7 +1166,7 @@ async function handle(req, res) {
             ...(source === 'theta_snapshot' ? ['QVERIS_DATA_GAP: stock quote snapshot may be exchange-delayed; gamma is not included in this pass.'] : ['QVERIS_DATA_GAP: theta/gamma/vega may be absent when the routed provider does not return them.']),
             'QVERIS_DATA_GAP: option reference master unavailable; US equity multiplier 100 remains an assumption.',
           ],
-        }, optionsRefreshMs))
+        }, marketOpen ? optionsRefreshMs : closedCacheMs))
       } catch (error) {
         return json(
           res,

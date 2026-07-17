@@ -3,6 +3,7 @@ import { createHash, createHmac, createPublicKey, randomBytes, timingSafeEqual, 
 const transactionTtlMs = 10 * 60 * 1000
 const applicationSessionTtlMs = 24 * 60 * 60 * 1000
 const metadataTtlMs = 5 * 60 * 1000
+const networkTimeoutMs = 10 * 1000
 
 function base64url(buffer) {
   return Buffer.from(buffer).toString('base64url')
@@ -93,7 +94,10 @@ async function verifyIdToken(token, { clientId, issuer, jwksUri, nonce, jwksCach
   const payload = decodeSegment(encodedPayload)
   if (header.alg !== 'RS256' || !header.kid) throw new Error('ID token algorithm is not allowed.')
   const loadKeys = async () => {
-    const response = await fetch(jwksUri, { headers: { accept: 'application/json' } })
+    const response = await fetch(jwksUri, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(networkTimeoutMs),
+    })
     if (!response.ok) throw new Error('Unable to load QVeris signing keys.')
     const keys = await readJsonResponse(response, 'QVeris signing keys are unreadable.')
     jwksCache.value = keys
@@ -188,6 +192,7 @@ export function createAuthRuntime({
     if (metadataCache.value && metadataCache.expires > Date.now()) return metadataCache.value
     const response = await fetch(`${normalizedAuthBaseUrl}/.well-known/openid-configuration`, {
       headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(networkTimeoutMs),
     })
     if (!response.ok) throw new Error('Unable to load QVeris discovery metadata.')
     metadataCache.value = validateMetadata(
@@ -271,6 +276,7 @@ export function createAuthRuntime({
             redirect_uri: redirectUri,
             code_verifier: transaction.verifier,
           }),
+          signal: AbortSignal.timeout(networkTimeoutMs),
         })
         const tokens = await readJsonResponse(response, 'QVeris token response is unreadable.')
         if (!response.ok || !tokens.id_token || !tokens.access_token) throw new Error('QVeris token exchange failed.')
@@ -283,6 +289,7 @@ export function createAuthRuntime({
         })
         const userinfoResponse = await fetch(discovery.userinfo_endpoint, {
           headers: { authorization: `Bearer ${tokens.access_token}`, accept: 'application/json' },
+          signal: AbortSignal.timeout(networkTimeoutMs),
         })
         const userinfo = await readJsonResponse(userinfoResponse, 'QVeris UserInfo response is unreadable.')
         if (

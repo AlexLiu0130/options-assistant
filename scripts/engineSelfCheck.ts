@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { strategyExpirationPayoff } from '../src/core/payoffEngine.ts'
-import { buildPaperTradeCostBreakdown, closePaperPosition, estimateIbkrUsOptionsFees, fillPaperOrder, markPaperPosition } from '../src/core/paperTradeEngine.ts'
+import { buildPaperTradeCostBreakdown, closePaperPosition, estimateIbkrUsOptionsFees, fillPaperOrder, isUsOptionsRegularTradingHours, markPaperPosition } from '../src/core/paperTradeEngine.ts'
 import { selectDefaultExpiration } from '../src/core/expirationEngine.ts'
 import { buildRiskChecklist } from '../src/core/riskChecklistEngine.ts'
 import { buildScenarioRows } from '../src/core/scenarioEngine.ts'
@@ -23,6 +23,15 @@ const spread: StrategyLeg[] = [
   { action: 'sell', right: 'call', strike: 110, expiration: '2026-07-17', quantity: 1, premium: 2, impliedVolatility: 0.25 },
 ]
 assert.equal(strategyExpirationPayoff(spread, 120), 700)
+
+assert.equal(isUsOptionsRegularTradingHours(Date.UTC(2026, 6, 6, 14)), true)
+assert.equal(isUsOptionsRegularTradingHours(Date.UTC(2026, 6, 3, 14)), false)
+assert.equal(isUsOptionsRegularTradingHours(Date.UTC(2026, 3, 3, 14)), false)
+assert.equal(isUsOptionsRegularTradingHours(Date.UTC(2026, 10, 26, 15)), false)
+assert.equal(isUsOptionsRegularTradingHours(Date.UTC(2026, 10, 27, 17, 30)), true)
+assert.equal(isUsOptionsRegularTradingHours(Date.UTC(2026, 10, 27, 18, 30)), false)
+assert.equal(isUsOptionsRegularTradingHours(Date.UTC(2026, 11, 24, 17, 30)), true)
+assert.equal(isUsOptionsRegularTradingHours(Date.UTC(2026, 11, 24, 18, 30)), false)
 
 const quotedSpread: StrategyLeg[] = [
   { action: 'buy', right: 'call', strike: 100, expiration: '2026-07-17', quantity: 1, premium: 1.1, bid: 1, ask: 1.2 },

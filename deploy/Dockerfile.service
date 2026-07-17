@@ -33,9 +33,11 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY server ./server
 COPY src ./src
+COPY scripts ./scripts
+COPY db ./db
 
 RUN mkdir -p /data /app/.cache/qveris
 
 EXPOSE 8787
 
-CMD ["node", "--experimental-strip-types", "server/qverisServer.mjs"]
+CMD ["sh", "-c", "node scripts/dbMigrate.mjs && exec node --experimental-strip-types server/qverisServer.mjs"]

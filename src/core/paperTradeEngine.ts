@@ -50,6 +50,9 @@ function isoNow(now = Date.now()) {
 function easternParts(now = Date.now()) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
     weekday: 'short',
     hour: '2-digit',
     minute: '2-digit',
@@ -58,11 +61,105 @@ function easternParts(now = Date.now()) {
   return Object.fromEntries(parts.map((part) => [part.type, part.value]))
 }
 
+function dateKey(year: number, month: number, day: number) {
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+function observedDate(year: number, month: number, day: number) {
+  const date = new Date(Date.UTC(year, month - 1, day))
+  const weekday = date.getUTCDay()
+  if (weekday === 6) date.setUTCDate(date.getUTCDate() - 1)
+  if (weekday === 0) date.setUTCDate(date.getUTCDate() + 1)
+  return date
+}
+
+function nthWeekdayOfMonth(year: number, month: number, weekday: number, ordinal: number) {
+  const date = new Date(Date.UTC(year, month - 1, 1))
+  date.setUTCDate(1 + ((weekday - date.getUTCDay() + 7) % 7) + (ordinal - 1) * 7)
+  return date
+}
+
+function lastWeekdayOfMonth(year: number, month: number, weekday: number) {
+  const date = new Date(Date.UTC(year, month, 0))
+  date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() - weekday + 7) % 7))
+  return date
+}
+
+function easterSunday(year: number) {
+  const goldenNumber = year % 19
+  const century = Math.floor(year / 100)
+  const yearOfCentury = year % 100
+  const leapCenturies = Math.floor(century / 4)
+  const remainingCenturies = century % 4
+  const correction = Math.floor((century + 8) / 25)
+  const adjustedCentury = Math.floor((century - correction + 1) / 3)
+  const epact = (19 * goldenNumber + century - leapCenturies - adjustedCentury + 15) % 30
+  const leapYears = Math.floor(yearOfCentury / 4)
+  const remainingYears = yearOfCentury % 4
+  const weekdayCorrection = (32 + 2 * remainingCenturies + 2 * leapYears - epact - remainingYears) % 7
+  const monthCorrection = Math.floor((goldenNumber + 11 * epact + 22 * weekdayCorrection) / 451)
+  const month = Math.floor((epact + weekdayCorrection - 7 * monthCorrection + 114) / 31)
+  const day = (epact + weekdayCorrection - 7 * monthCorrection + 114) % 31 + 1
+  return new Date(Date.UTC(year, month - 1, day))
+}
+
+function priorWeekday(date: Date) {
+  const previous = new Date(date)
+  previous.setUTCDate(previous.getUTCDate() - 1)
+  while (previous.getUTCDay() === 0 || previous.getUTCDay() === 6) previous.setUTCDate(previous.getUTCDate() - 1)
+  return previous
+}
+
+function nyseHolidayKeys(year: number) {
+  const holidays = new Set<string>()
+  for (const calendarYear of [year - 1, year, year + 1]) {
+    const goodFriday = easterSunday(calendarYear)
+    goodFriday.setUTCDate(goodFriday.getUTCDate() - 2)
+    const dates = [
+      observedDate(calendarYear, 1, 1),
+      nthWeekdayOfMonth(calendarYear, 1, 1, 3),
+      nthWeekdayOfMonth(calendarYear, 2, 1, 3),
+      goodFriday,
+      lastWeekdayOfMonth(calendarYear, 5, 1),
+      observedDate(calendarYear, 7, 4),
+      nthWeekdayOfMonth(calendarYear, 9, 1, 1),
+      nthWeekdayOfMonth(calendarYear, 11, 4, 4),
+      observedDate(calendarYear, 12, 25),
+    ]
+    if (calendarYear >= 2022) dates.push(observedDate(calendarYear, 6, 19))
+    for (const date of dates) holidays.add(dateKey(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate()))
+  }
+  return holidays
+}
+
+function nyseEarlyCloseKeys(year: number) {
+  const thanksgiving = nthWeekdayOfMonth(year, 11, 4, 4)
+  const independenceObserved = observedDate(year, 7, 4)
+  const christmasObserved = observedDate(year, 12, 25)
+  const dates = [
+    priorWeekday(independenceObserved),
+    new Date(Date.UTC(year, 10, thanksgiving.getUTCDate() + 1)),
+    priorWeekday(christmasObserved),
+  ]
+  const holidays = nyseHolidayKeys(year)
+  return new Set(
+    dates
+      .filter((date) => !holidays.has(dateKey(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate())))
+      .map((date) => dateKey(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate())),
+  )
+}
+
 export function isUsOptionsRegularTradingHours(now = Date.now()) {
   const parts = easternParts(now)
   if (parts.weekday === 'Sat' || parts.weekday === 'Sun') return false
+  const year = Number(parts.year)
+  const month = Number(parts.month)
+  const day = Number(parts.day)
+  const key = dateKey(year, month, day)
+  if (nyseHolidayKeys(year).has(key)) return false
   const minutes = Number(parts.hour) * 60 + Number(parts.minute)
-  return minutes >= 9 * 60 + 30 && minutes < 16 * 60
+  const closeMinutes = nyseEarlyCloseKeys(year).has(key) ? 13 * 60 : 16 * 60
+  return minutes >= 9 * 60 + 30 && minutes < closeMinutes
 }
 
 function daysUntil(expiration: string, now = Date.now()) {

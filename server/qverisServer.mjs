@@ -24,6 +24,7 @@ import {
   supportedUniversePayload,
 } from './supportedUnderlyings.mjs'
 import { createAuthRuntime } from './auth.mjs'
+import { isUsOptionsRegularTradingHours as isUsRegularMarketOpen } from '../src/core/paperTradeEngine.ts'
 
 const envPath = new URL('../.env.local', import.meta.url)
 if (existsSync(envPath)) {
@@ -50,6 +51,8 @@ const openInterestCacheMs = Number(process.env.QVERIS_OPEN_INTEREST_CACHE_MS || 
 const heavyLimit = Number(process.env.QVERIS_HEAVY_CONCURRENCY || 4)
 const prewarmEnabled = process.env.QVERIS_PREWARM_ENABLED !== 'false'
 const prewarmIntervalMs = Number(process.env.QVERIS_PREWARM_INTERVAL_MS || 15000)
+const upstreamTimeoutMs = Math.max(1000, Number(process.env.QVERIS_UPSTREAM_TIMEOUT_MS || 20000))
+const maxJsonBodyBytes = 1_000_000
 const authBaseUrl = String(process.env.QVERIS_AUTH_BASE_URL || 'https://qveris.ai').replace(/\/$/, '')
 const adminEmails = new Set(
   String(process.env.OPTIONS_ASSISTANT_ADMIN_EMAILS || '')
@@ -195,8 +198,17 @@ function requireSupportedTicker(ticker) {
 }
 
 async function readJson(req) {
+  const declaredLength = Number(req.headers['content-length'] || 0)
+  if (Number.isFinite(declaredLength) && declaredLength > maxJsonBodyBytes) {
+    throw safeError('Request body is too large.', 413)
+  }
   const chunks = []
-  for await (const chunk of req) chunks.push(chunk)
+  let totalBytes = 0
+  for await (const chunk of req) {
+    totalBytes += chunk.length
+    if (totalBytes > maxJsonBodyBytes) throw safeError('Request body is too large.', 413)
+    chunks.push(chunk)
+  }
   if (!chunks.length) return {}
   try {
     return JSON.parse(Buffer.concat(chunks).toString('utf8'))
@@ -206,19 +218,25 @@ async function readJson(req) {
 }
 
 async function qverisExecuteNow(toolId, parameters, maxResponseSize = 20000) {
-  const response = await fetch(`${baseUrl}/tools/execute?tool_id=${encodeURIComponent(toolId)}`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${requireKey()}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      session_id: sessionId,
-      model: 'options-assistant-local',
-      parameters,
-      max_response_size: maxResponseSize,
-    }),
-  })
+  let response
+  try {
+    response = await fetch(`${baseUrl}/tools/execute?tool_id=${encodeURIComponent(toolId)}`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${requireKey()}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        session_id: sessionId,
+        model: 'options-assistant-local',
+        parameters,
+        max_response_size: maxResponseSize,
+      }),
+      signal: AbortSignal.timeout(upstreamTimeoutMs),
+    })
+  } catch {
+    throw safeError('QVeris request timed out or failed.', 502)
+  }
   let payload
   try {
     payload = await response.json()
@@ -288,57 +306,53 @@ function startPrewarm(origin) {
     const symbol = prewarmSymbols[prewarmCursor++ % prewarmSymbols.length]
     if (prewarmInflight.has(symbol) || cached(optionsCache, 'options', `${symbol}:open`)) return
     prewarmInflight.add(symbol)
-    fetch(`${origin}/api/options/${symbol}?live=1`, { headers: { 'x-options-internal-token': authRuntime.internalToken } })
+    fetch(`${origin}/api/options/${symbol}?live=1`, {
+      headers: { 'x-options-internal-token': authRuntime.internalToken },
+      signal: AbortSignal.timeout(upstreamTimeoutMs),
+    })
       .catch(() => {})
       .finally(() => prewarmInflight.delete(symbol))
   }, prewarmIntervalMs)
   timer.unref?.()
 }
 
-function isUsRegularMarketOpen(date = new Date()) {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    weekday: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(date).map((part) => [part.type, part.value]))
-  if (parts.weekday === 'Sat' || parts.weekday === 'Sun') return false
-  const minutes = Number(parts.hour) * 60 + Number(parts.minute)
-  return minutes >= 9 * 60 + 30 && minutes < 16 * 60
-}
-
 async function deepseekChat(messages, systemExtra = '') {
-  const response = await fetch(`${deepseekBaseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${requireDeepSeekKey()}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: deepseekModel,
-      temperature: 0.2,
-      messages: [
-        {
-          role: 'system',
-          content:
-            [
-              'You are Qveris AI, a US options research assistant for paper-trade education.',
-              'Use only the JSON marketContext supplied by Qveris. Never invent prices, Greeks, probabilities, expirations, strikes, costs, or data sources.',
-              'Deterministic calculations such as payoff, scenario P/L, max loss, max profit, breakeven, and simulator values are already computed by Qveris engines; explain them, do not recalculate or override them.',
-              'Strategy rankDetails and playbook are deterministic Qveris engine outputs. Use them for suitability, exit, adjustment, and risk-management explanations; do not invent different rules.',
-              'When discussing a strategy, explain why the DTE and strikes fit the user view, risk budget, and experience level. If the user asks to adjust DTE or strikes, explain the trade-off in risk, cost/credit, breakeven, theta, gamma, IV/event risk, and assignment risk when relevant.',
-              'Use Qveris defaults: option buyers generally need more time; short premium defaults around 30-45 DTE; long directional trades default around 30-60 DTE; DTE under 7 is high risk for beginners unless explicitly requested.',
-              'Do not give personalized investment advice. Do not say buy, sell, hold, enter, exit, should, must, guaranteed, safe, or risk-free.',
-              'If data is missing, explicitly say it is missing and keep the answer conditional.',
-              'Keep answers concise, beginner-friendly, and clearly label scenarios as scenarios, not predictions.',
-              systemExtra,
-            ].filter(Boolean).join(' '),
-        },
-        ...messages,
-      ],
-    }),
-  })
+  let response
+  try {
+    response = await fetch(`${deepseekBaseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${requireDeepSeekKey()}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: deepseekModel,
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'system',
+            content:
+              [
+                'You are Qveris AI, a US options research assistant for paper-trade education.',
+                'Use only the JSON marketContext supplied by Qveris. Never invent prices, Greeks, probabilities, expirations, strikes, costs, or data sources.',
+                'Deterministic calculations such as payoff, scenario P/L, max loss, max profit, breakeven, and simulator values are already computed by Qveris engines; explain them, do not recalculate or override them.',
+                'Strategy rankDetails and playbook are deterministic Qveris engine outputs. Use them for suitability, exit, adjustment, and risk-management explanations; do not invent different rules.',
+                'When discussing a strategy, explain why the DTE and strikes fit the user view, risk budget, and experience level. If the user asks to adjust DTE or strikes, explain the trade-off in risk, cost/credit, breakeven, theta, gamma, IV/event risk, and assignment risk when relevant.',
+                'Use Qveris defaults: option buyers generally need more time; short premium defaults around 30-45 DTE; long directional trades default around 30-60 DTE; DTE under 7 is high risk for beginners unless explicitly requested.',
+                'Do not give personalized investment advice. Do not say buy, sell, hold, enter, exit, should, must, guaranteed, safe, or risk-free.',
+                'If data is missing, explicitly say it is missing and keep the answer conditional.',
+                'Keep answers concise, beginner-friendly, and clearly label scenarios as scenarios, not predictions.',
+                systemExtra,
+              ].filter(Boolean).join(' '),
+          },
+          ...messages,
+        ],
+      }),
+      signal: AbortSignal.timeout(upstreamTimeoutMs),
+    })
+  } catch {
+    throw safeError('DeepSeek request timed out or failed.', 502)
+  }
   let payload
   try {
     payload = await response.json()
@@ -394,8 +408,10 @@ function parseJsonQuery(value) {
 
 async function parseToolContent(result) {
   if (result?.full_content_file_url) {
-    const response = await fetch(result.full_content_file_url)
-    if (response.ok) return response.json()
+    try {
+      const response = await fetch(result.full_content_file_url, { signal: AbortSignal.timeout(upstreamTimeoutMs) })
+      if (response.ok) return response.json()
+    } catch {}
   }
   return parseMaybeTruncated(result)
 }

@@ -77,7 +77,7 @@ function ticker(text) {
   return token && !['CALL', 'PUT', 'DTE', 'IV', 'POP'].includes(token) ? token : undefined
 }
 
-function classifyIntent(message) {
+export function classifyAssistantIntent(message) {
   const text = String(message).toLowerCase()
   if (/dte|strike|adjust|change|move|拉长|缩短|行权价|调整|换成/.test(text)) return 'adjust'
   if (/risk check|风险检查|风险预算|超预算/.test(text)) return 'risk_check'
@@ -199,7 +199,7 @@ export function buildAssistantPlan({ userMessage, marketContext = {}, history = 
   }
   Object.keys(structuredUpdates).forEach((key) => structuredUpdates[key] === undefined && delete structuredUpdates[key])
 
-  const intent = classifyIntent(userMessage)
+  const intent = classifyAssistantIntent(userMessage)
   const state = profileState(parsedView, structuredUpdates)
   const dataGaps = [
     ...(Array.isArray(marketContext.dataGaps) ? marketContext.dataGaps : []),

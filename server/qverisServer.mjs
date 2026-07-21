@@ -20,6 +20,7 @@ import {
   profileFromMarketContext,
   profileQuestion,
   profileUpdatesForClient,
+  resolveAssistantFactTokens,
   unknownFinancialNumbers,
 } from './assistantHarness.mjs'
 import {
@@ -1188,7 +1189,16 @@ async function handle(req, res) {
       } catch {
         parsed = null
       }
-      if (!parsed || unknownFinancialNumbers(parsed, { profile, agentPlan, canonicalContext }).length) {
+      if (!parsed || unknownFinancialNumbers(parsed).length) {
+        const fallback = agentFallbackResponse(agentPlan, isZh)
+        return json(res, 200, {
+          ...fallback,
+          structuredUpdates,
+          agentState: agentPlan.agentState,
+        })
+      }
+      parsed = resolveAssistantFactTokens(parsed, agentPlan)
+      if (!parsed) {
         const fallback = agentFallbackResponse(agentPlan, isZh)
         return json(res, 200, {
           ...fallback,

@@ -337,7 +337,7 @@ export function agentFallbackResponse(plan, isZh = false) {
 }
 
 export function enforceAgentResponse(payload, marketContext = {}, plan = {}, isZh = false) {
-  const warnings = Array.isArray(payload?.warnings) ? payload.warnings.map(String) : []
+  const warnings = []
   const guarded = guardAssistantText(payload?.answer || agentFallbackResponse(plan, isZh).answer, { marketContext, plan, isZh })
   warnings.unshift(...guarded.warnings)
   const sections = normalizeSections(payload?.sections, { marketContext, plan, isZh })
@@ -353,7 +353,7 @@ export function enforceAgentResponse(payload, marketContext = {}, plan = {}, isZ
     structuredUpdates: plan.structuredUpdates ?? {},
     referencedStrategyIds: referencedStrategyIds.length ? referencedStrategyIds : plan.referencedStrategyIds ?? [],
     warnings,
-    dataGaps: [...new Set([...(plan.dataGaps ?? []), ...(guarded.dataGaps ?? []), ...(Array.isArray(payload?.dataGaps) ? payload.dataGaps.map(String) : [])])],
+    dataGaps: [...new Set([...(plan.dataGaps ?? []), ...(guarded.dataGaps ?? [])])],
   }
 }
 
@@ -361,8 +361,8 @@ function normalizeSections(value, guardContext) {
   if (!Array.isArray(value)) return []
   return value.slice(0, 6).map((section) => {
     const title = String(section?.title ?? '').replace(/[*#:：]+/g, '').trim()
-    const guarded = guardAssistantText(section?.body ?? section?.content ?? '', guardContext)
-    return { title, body: guarded.answer }
+    const guarded = guardAssistantText(section?.body ?? '', guardContext)
+    return { strategyId: section?.strategyId ? String(section.strategyId) : undefined, title, body: guarded.answer }
   }).filter((section) => section.title && section.body)
 }
 

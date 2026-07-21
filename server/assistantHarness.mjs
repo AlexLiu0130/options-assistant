@@ -156,10 +156,13 @@ export function buildExplanationPrompt({ userMessage, history, profile, plan, ma
   return {
     instruction: [
       'Return JSON only.',
-      'Schema: {intent, title, answer, sections, followUpQuestion, referencedStrategyIds, warnings, dataGaps}.',
+      'Schema: {intent, title, answer, sections:[{strategyId,title,body}], followUpQuestion, referencedStrategyIds}.',
       'Explain only the deterministic candidates in agentPlan.topStrategies.',
       'referencedStrategyIds must be a subset of agentPlan.referencedStrategyIds.',
-      'Copy prices, strikes, expirations, probabilities, fees, P/L and DTE exactly; never calculate or invent a number.',
+      'Never write a numeric literal. Numeric values are inserted by Qveris after validation.',
+      'When a number is necessary, put it only in a section body and use {{strategy:STRATEGY_ID.FIELD}} where FIELD is maxLoss, maxProfit, probabilityOfProfit, expectedMove, breakeven0, or leg0.strike, leg0.premium, leg0.expiration, leg0.quantity (replace indexes as needed).',
+      'A section using a fact token must set strategyId to the same STRATEGY_ID. Never put fact tokens in title, answer, or followUpQuestion.',
+      'Do not repeat or translate a strategy name inside a section body; Qveris supplies the section title from strategyId.',
       'Never add, remove, reverse, resize, or replace a strategy leg.',
       'Explain why supplied DTE and strikes fit the profile, the main trade-off, and the most important risk.',
       'Clearly distinguish expiration payoff from pre-expiration theoretical value.',
@@ -183,28 +186,90 @@ export function buildExplanationPrompt({ userMessage, history, profile, plan, ma
 }
 
 export function isPromptInjection(message) {
-  return /ignore (?:all |the )?(?:previous|system|developer)|reveal (?:the )?(?:system|developer) prompt|show (?:your )?(?:hidden|system) instructions|忽略(?:之前|以上|系统|开发者)|显示(?:系统|隐藏)提示词|泄露(?:系统|开发者)指令/i.test(String(message))
+  return /ignore (?:all |the )?(?:previous|system|developer)|reveal (?:the )?(?:system|developer) prompt|show (?:your )?(?:hidden|system) instructions|pretend .*?(?:system|developer).*?(?:prompt|instructions)|base64.*?(?:system prompt|instructions)|忽略(?:之前|以上|系统|开发者)|显示(?:系统|隐藏)提示词|泄露(?:系统|开发者)指令|假装.*?(?:系统|开发者).*?(?:提示词|指令)|base64.*?(?:提示词|指令)/i.test(String(message))
 }
 
-function collectNumbers(value, numbers = new Set()) {
-  if (typeof value === 'number' && Number.isFinite(value)) numbers.add(Number(value.toFixed(4)))
-  else if (Array.isArray(value)) value.forEach((item) => collectNumbers(item, numbers))
-  else if (value && typeof value === 'object') Object.values(value).forEach((item) => collectNumbers(item, numbers))
-  return numbers
-}
-
-function financialNumbers(text) {
-  const matches = String(text).matchAll(/\$\s*([0-9][0-9,]*(?:\.\d+)?)|([0-9]+(?:\.\d+)?)\s*%|([0-9]+)\s*DTE/gi)
-  return [...matches].map((match) => Number(String(match[1] ?? match[2] ?? match[3]).replaceAll(',', '')))
-}
-
-export function unknownFinancialNumbers(payload, trustedContext) {
-  const allowed = collectNumbers(trustedContext)
-  ;[7, 14, 30, 45, 60, 100].forEach((number) => allowed.add(number))
-  const prose = [
+function assistantProse(payload) {
+  return [
+    payload?.title,
     payload?.answer,
     payload?.followUpQuestion,
     ...(Array.isArray(payload?.sections) ? payload.sections.flatMap((section) => [section?.title, section?.body]) : []),
+    ...(Array.isArray(payload?.warnings) ? payload.warnings : []),
+    ...(Array.isArray(payload?.dataGaps) ? payload.dataGaps : []),
   ].filter(Boolean).join(' ')
-  return financialNumbers(prose).filter((number) => ![...allowed].some((allowedNumber) => Math.abs(allowedNumber - number) < 0.0001))
+}
+
+const factTokenSource = '\\{\\{strategy:([A-Za-z0-9_-]+)\\.([A-Za-z0-9.]+)\\}\\}'
+
+function financialNumbers(text) {
+  const withoutTokens = String(text).normalize('NFKC').replace(new RegExp(factTokenSource, 'g'), '')
+  const dates = [...withoutTokens.matchAll(/\b\d{4}[-/]\d{2}[-/]\d{2}\b/g)].map((match) => match[0].replaceAll('/', '-'))
+  const withoutDates = withoutTokens.replace(/\b\d{4}[-/]\d{2}[-/]\d{2}\b/g, '')
+  const numbers = [...withoutDates.matchAll(/-?(?:\d[\d,]*(?:\.\d+)?|\.\d+)/g)].map((match) => Number(match[0].replaceAll(',', '')))
+  const unicodeNumbers = [...withoutDates.matchAll(/[\u0660-\u0669\u06F0-\u06F9]+/g)].map((match) => match[0])
+  const chineseFinancialSentence = /(?:行权价|执行价|权利金|手续费|费用|佣金|成本|价格|价值|亏损|盈利|收益|到期日|合约|数量|借记|贷记|盈亏平衡)[^。！？!?]*?([零一二三四五六七八九十百千万亿两半]+)/gi
+  const chineseNumbers = [...withoutDates.matchAll(chineseFinancialSentence)].map((match) => match[1])
+  const chineseScaledNumbers = [...withoutDates.matchAll(/[零一二三四五六七八九两]+[十百千万亿][零一二三四五六七八九十百千万亿两]*/g)].map((match) => match[0])
+  const englishNumberWords = 'zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|trillion|half|quarter|double|triple|twice|dozen|score|couple'
+  const englishNumbers = [...withoutDates.matchAll(new RegExp(`\\b(${englishNumberWords})\\b`, 'gi'))].map((match) => match[1].toLowerCase())
+  const implicitEnglishQuantities = [...withoutDates.matchAll(/\b(?:a|an)\s+(?:dollars?|cents?|contracts?|shares?)\b/gi)].map((match) => match[0].toLowerCase())
+  return [...new Set([...dates, ...numbers, ...unicodeNumbers, ...chineseNumbers, ...chineseScaledNumbers, ...englishNumbers, ...implicitEnglishQuantities])]
+}
+
+export function unknownFinancialNumbers(payload) {
+  return financialNumbers(assistantProse(payload))
+}
+
+function formatFact(path, value) {
+  if (typeof value !== 'number') return String(value)
+  if (path === 'probabilityOfProfit') return `${value.toFixed(1)}%`
+  if (path.endsWith('.quantity')) return String(value)
+  return `$${value.toFixed(2)}`
+}
+
+function strategyFact(strategy, path) {
+  if (['maxLoss', 'maxProfit', 'probabilityOfProfit', 'expectedMove'].includes(path)) return strategy?.[path]
+  const breakevenMatch = path.match(/^breakeven(\d+)$/)
+  if (breakevenMatch) return strategy?.breakevens?.[Number(breakevenMatch[1])]
+  const legMatch = path.match(/^leg(\d+)\.(strike|premium|expiration|quantity)$/)
+  if (legMatch) return strategy?.legs?.[Number(legMatch[1])]?.[legMatch[2]]
+  return undefined
+}
+
+export function resolveAssistantFactTokens(payload, plan) {
+  const strategies = new Map((plan?.topStrategies ?? []).map((strategy) => [String(strategy.id), strategy]))
+  const referenced = new Set((payload?.referencedStrategyIds ?? []).map(String).filter((id) => strategies.has(id)))
+  const tokenLike = (value) => /\{\{|\}\}|strategy\s*:/i.test(String(value ?? ''))
+  if ([payload?.title, payload?.answer, payload?.followUpQuestion].some(tokenLike)) return null
+  const sections = []
+  for (const section of Array.isArray(payload?.sections) ? payload.sections : []) {
+    if (section?.content !== undefined) return null
+    const strategyId = section?.strategyId ? String(section.strategyId) : undefined
+    const strategy = strategies.get(strategyId)
+    const body = String(section?.body ?? '')
+    if (tokenLike(section?.title)) return null
+    const tokens = [...body.matchAll(new RegExp(factTokenSource, 'g'))]
+    if ((strategyId && !referenced.has(strategyId)) || (tokens.length && !strategyId)) return null
+    let resolvedBody = body
+    for (const [token, tokenStrategyId, path] of tokens) {
+      if (tokenStrategyId !== strategyId) return null
+      const fact = strategyFact(strategies.get(tokenStrategyId), path)
+      if (fact === undefined) return null
+      resolvedBody = resolvedBody.replace(token, formatFact(path, fact))
+    }
+    if (tokenLike(resolvedBody)) return null
+    const identityPattern = /\bstrategy\b|策略|方案|组合|候选/i
+    const namesIdentity = [...strategies.values()].some((item) => {
+      const name = String(item?.name ?? '').trim()
+      const id = String(item?.id ?? '').trim()
+      return [name, id].filter((value) => value.length >= 4).some((value) => resolvedBody.toLowerCase().includes(value.toLowerCase()))
+    })
+    if (identityPattern.test(resolvedBody) || namesIdentity) return null
+    sections.push({ strategyId, title: String(strategy?.name ?? strategyId ?? ''), body: resolvedBody })
+  }
+  return {
+    ...payload,
+    sections,
+  }
 }

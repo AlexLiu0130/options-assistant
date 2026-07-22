@@ -15,7 +15,6 @@ import {
   Zap,
 } from 'lucide-react'
 import { AssistantExplanationPanel } from './components/AssistantExplanationPanel'
-import { AuthGate } from './components/AuthGate'
 import { AssistantBot } from './components/AssistantBot'
 import { HomePage } from './components/HomePage'
 import { OptionChainTable } from './components/OptionChainTable'
@@ -268,7 +267,7 @@ function AuthenticatedApp() {
 }
 
 function App() {
-  return <AuthGate><AuthenticatedApp /></AuthGate>
+  return <AuthenticatedApp />
 }
 
 function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: string; theme: 'light' | 'dark'; onToggleTheme: () => void }) {

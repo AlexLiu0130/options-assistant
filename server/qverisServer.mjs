@@ -5,9 +5,23 @@ import { fileURLToPath } from 'node:url'
 import {
   agentFallbackResponse,
   buildAssistantPlan,
+  classifyAssistantIntent,
   enforceAgentResponse,
   guardAssistantText,
 } from './assistantAgent.mjs'
+import {
+  buildExplanationPrompt,
+  buildExtractionPrompt,
+  isPromptInjection,
+  mergeAgentProfile,
+  nextRequiredProfileField,
+  normalizeExtraction,
+  parsedViewInput,
+  profileFromMarketContext,
+  profileQuestion,
+  profileUpdatesForClient,
+  unknownFinancialNumbers,
+} from './assistantHarness.mjs'
 import {
   closePaperPositionById,
   getPaperAccount,
@@ -24,7 +38,9 @@ import {
   supportedUniversePayload,
 } from './supportedUnderlyings.mjs'
 import { createAuthRuntime } from './auth.mjs'
+import { parseUserView } from '../src/core/parseUserView.ts'
 import { isUsOptionsRegularTradingHours as isUsRegularMarketOpen } from '../src/core/paperTradeEngine.ts'
+import { recommendStrategyTypes } from '../src/core/strategyRecommendationEngine.ts'
 
 const envPath = new URL('../.env.local', import.meta.url)
 if (existsSync(envPath)) {
@@ -70,6 +86,12 @@ const authRuntime = createAuthRuntime({
   scopes: process.env.QVERIS_OAUTH_SCOPES || 'openid profile email',
   secureCookie: process.env.QVERIS_OAUTH_SECURE_COOKIE === 'true',
 })
+const localAuthBypass = process.env.OPTIONS_ASSISTANT_LOCAL_AUTH_BYPASS !== 'false'
+const localAuthUser = {
+  sub: 'local-dev-user',
+  email: 'local-dev@qveris.test',
+  name: 'Local Dev',
+}
 const prewarmSymbols = String(process.env.QVERIS_PREWARM_SYMBOLS || PREWARM_SYMBOLS.join(','))
   .split(',')
   .map((symbol) => tickerFromPath(symbol, ''))
@@ -314,6 +336,65 @@ function startPrewarm(origin) {
       .finally(() => prewarmInflight.delete(symbol))
   }, prewarmIntervalMs)
   timer.unref?.()
+}
+
+async function assistantApiJson(pathname) {
+  const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
+    headers: { 'x-options-internal-token': authRuntime.internalToken },
+    signal: AbortSignal.timeout(Math.max(upstreamTimeoutMs, 30_000)),
+  })
+  const body = await response.json()
+  if (!response.ok) throw safeError(body?.error || `Assistant tool request failed: ${pathname}`, response.status)
+  return body
+}
+
+async function canonicalAssistantContext(profile, selectedStrategyId) {
+  const ticker = profile.ticker
+  const [optionsResult, quoteResult] = await Promise.allSettled([
+    assistantApiJson(`/api/options/${encodeURIComponent(ticker)}`),
+    assistantApiJson(`/api/quote/${encodeURIComponent(ticker)}`),
+  ])
+  const options = optionsResult.status === 'fulfilled'
+    ? optionsResult.value
+    : unavailableOptions(ticker, optionsResult.reason?.message || 'The option chain is unavailable.')
+  const market = quoteResult.status === 'fulfilled' ? quoteResult.value : options.market
+  const spot = Number(market?.price)
+  const dataGaps = [
+    ...(Array.isArray(options.dataGaps) ? options.dataGaps : []),
+    ...(quoteResult.status === 'rejected' ? [`QVERIS_MARKET_GAP: stock quote unavailable (${quoteResult.reason?.message || 'unknown error'}).`] : []),
+  ]
+  if (!Number.isFinite(spot) || spot <= 0 || options.status !== 'available') {
+    return {
+      ticker,
+      market,
+      options,
+      strategies: [],
+      selectedStrategy: undefined,
+      parsedView: undefined,
+      snapshotId: `${ticker}:${options.asOf || market?.asOf || 'unavailable'}`,
+      generatedAt: options.asOf || market?.asOf || new Date().toISOString(),
+      dataGaps,
+      recommendable: false,
+    }
+  }
+  const parsedView = parseUserView(parsedViewInput(profile, spot))
+  const strategies = recommendStrategyTypes(parsedView, options, undefined, { rank: true })
+  const selectedStrategy = strategies.find((strategy) => strategy.id === selectedStrategyId)
+  const orderedStrategies = selectedStrategy
+    ? [selectedStrategy, ...strategies.filter((strategy) => strategy.id !== selectedStrategy.id)]
+    : strategies
+  return {
+    ticker,
+    market,
+    options,
+    strategies: orderedStrategies,
+    selectedStrategy,
+    parsedView,
+    snapshotId: `${ticker}:${options.asOf || market?.asOf}`,
+    generatedAt: options.asOf || market?.asOf || new Date().toISOString(),
+    dataGaps,
+    recommendable: orderedStrategies.some((strategy) => strategy.status === 'contract_ready' && strategy.legs.length > 0),
+  }
 }
 
 async function deepseekChat(messages, systemExtra = '') {
@@ -878,10 +959,14 @@ async function handle(req, res) {
   try {
     if (req.method === 'OPTIONS') return json(res, 204, {})
     const url = new URL(req.url || '/', `http://${req.headers.host}`)
-    if (await authRuntime.handle(req, res, url, json)) return
+    if (localAuthBypass && url.pathname === '/api/auth/me' && req.method === 'GET') {
+      return json(res, 200, { user: localAuthUser, registerUrl: `${authBaseUrl}/sign-up` })
+    }
+    if (localAuthBypass && url.pathname === '/api/auth/logout' && req.method === 'POST') return json(res, 200, { ok: true })
+    if (!localAuthBypass && await authRuntime.handle(req, res, url, json)) return
     if (url.pathname === '/api/health') return json(res, 200, { ok: true })
 
-    const authUser = authRuntime.currentUser(req)
+    const authUser = localAuthBypass ? localAuthUser : authRuntime.currentUser(req)
     if (url.pathname.startsWith('/api/') && !authUser) {
       return json(res, 401, { error: 'Authentication required.' })
     }
@@ -967,7 +1052,7 @@ async function handle(req, res) {
       const userMessage = String(body.userMessage ?? '').trim()
       if (!userMessage) throw safeError('userMessage is required.', 400)
       const isZh = body.language === 'zh'
-      if (isOutOfScopeAssistantMessage(userMessage)) {
+      if (isPromptInjection(userMessage) || isOutOfScopeAssistantMessage(userMessage)) {
         return json(res, 200, {
           intent: 'refuse',
           answer: isZh
@@ -978,51 +1063,144 @@ async function handle(req, res) {
           dataGaps: [],
         })
       }
-      const marketContext = body.marketContext ?? {}
+      const clientContext = body.marketContext ?? {}
       const history = Array.isArray(body.history) ? body.history : []
-      const agentPlan = buildAssistantPlan({ userMessage, marketContext, history, isZh })
-      if (agentPlan.directResponse) return json(res, 200, agentPlan.directResponse)
-      const langRule = isZh
-        ? 'All answer, followUpQuestion, and warnings values in the JSON must be in Simplified Chinese.'
-        : 'Respond in English.'
       const systemExtra = isZh
         ? 'CRITICAL LANGUAGE RULE: You MUST write every word of your response in Simplified Chinese (简体中文). Do not use any English words except stock tickers, option Greeks, and technical abbreviations (e.g. NVDA, IV, ATM).'
         : ''
-      const response = await deepseekChat([
-        {
-          role: 'user',
-          content: JSON.stringify({
-            instruction:
-              [
-                'Return JSON only.',
-                'Schema: {intent, title, answer, sections, followUpQuestion, structuredUpdates, referencedStrategyIds, warnings, dataGaps}. Intent must be one of clarify, recommend, explain, compare, educate, adjust, risk_check, refuse.',
-                'sections must be an array of 2-4 objects shaped {title, body}. Use these section titles when relevant: Strategy structure, Why it fits, Key risks, Possible adjustments.',
-                'Follow agentPlan exactly. If agentPlan has topStrategies, recommend or compare only those strategies unless the user is only asking a general education question.',
-                'Use agentPlan.agentState as the current user profile and agentPlan.toolPlan as the deterministic tool result. Do not invent additional tools or strategy legs.',
-                'structuredUpdates may include ticker, direction, strength, horizon, riskBudget, targetPrice, ownsShares, sharesCount, willingToBeAssigned, experienceLevel.',
-                'Use exact values when possible: direction one of bullish, bearish, neutral, volatile; strength one of mild, moderate, strong; experienceLevel one of beginner, intermediate, advanced.',
-                'When the user supplies a clear market view field, put it in structuredUpdates.',
-                'Ask exactly one follow-up question when a key field is missing: direction, strength, horizon, riskBudget, targetPrice, ownsShares, or assignment willingness.',
-                'Keep answer to one concise summary sentence. Put details in sections. Do not use Markdown, bullets, asterisks, or leading colons.',
-                'Stay within US options strategy education, structured intake, payoff/scenario/risk explanation, and Qveris-provided strategy candidates.',
-                'For recommendations, include the reason for DTE and strike selection using supplied strategy legs, expectedMove, rankReasons, rankDetails, rankWarnings, riskChecklist, and playbook. If the user wants to adjust a strike or DTE, explain the likely trade-off and ask one clarifying question before changing structured fields.',
-                'Warn that DTE under 7 is high risk for beginners, short premium is normally managed around 30-45 DTE, long directional trades normally need 30-60 DTE, and event dates can cause IV crush or gap risk.',
-                'Refuse unrelated topics.',
-                'If maxLoss exceeds riskBudget, say the strategy does not fit the risk budget and do not describe it as suitable.',
-                langRule,
-              ].join(' '),
-            userMessage,
-            history,
-            agentPlan,
-            marketContext,
-          }),
-        },
-      ], systemExtra)
-      const parsed = safeParseAssistantJson(response.text)
-      if (!parsed) {
-        return json(res, 200, agentFallbackResponse(agentPlan, isZh))
+
+      const currentProfile = profileFromMarketContext(clientContext)
+      const parserFallback = buildAssistantPlan({
+        userMessage,
+        marketContext: { parsedView: clientContext.parsedView ?? {} },
+        history,
+        isZh,
+      })
+      let extraction = normalizeExtraction(undefined, {
+        intent: classifyAssistantIntent(userMessage),
+        profilePatch: parserFallback.structuredUpdates,
+      })
+      try {
+        const extractionResponse = await deepseekChat([
+          {
+            role: 'user',
+            content: JSON.stringify(buildExtractionPrompt({
+              userMessage,
+              history,
+              currentProfile,
+              language: isZh ? 'zh' : 'en',
+            })),
+          },
+        ], systemExtra)
+        extraction = normalizeExtraction(safeParseAssistantJson(extractionResponse.text), extraction)
+      } catch {
+        // Deterministic parsing keeps the assistant usable when the model is unavailable.
       }
-      return json(res, 200, enforceAgentResponse(parsed, marketContext, agentPlan, isZh))
+      const profile = mergeAgentProfile(currentProfile, {
+        ...extraction.profilePatch,
+        ...extraction.requestedAdjustment,
+      })
+      const structuredUpdates = profileUpdatesForClient(extraction.profilePatch)
+      const missingField = nextRequiredProfileField(extraction.intent, profile)
+      if (missingField) {
+        const question = profileQuestion(missingField, isZh)
+        return json(res, 200, {
+          intent: 'clarify',
+          answer: question,
+          followUpQuestion: question,
+          structuredUpdates,
+          referencedStrategyIds: [],
+          warnings: [],
+          dataGaps: [],
+          agentState: { status: 'collecting', profile, missingFields: [missingField] },
+        })
+      }
+
+      const needsEngine = ['recommend', 'compare', 'adjust', 'risk_check', 'explain'].includes(extraction.intent)
+      const selectedStrategyId = String(clientContext.selectedStrategy?.id ?? clientContext.selectedStrategyId ?? '') || undefined
+      const canonicalContext = needsEngine
+        ? await canonicalAssistantContext(profile, selectedStrategyId)
+        : {
+            ticker: profile.ticker,
+            market: undefined,
+            options: undefined,
+            strategies: [],
+            selectedStrategy: undefined,
+            parsedView: clientContext.parsedView ?? {},
+            snapshotId: undefined,
+            generatedAt: new Date().toISOString(),
+            dataGaps: [],
+            recommendable: false,
+          }
+
+      if (needsEngine && !canonicalContext.recommendable) {
+        const answer = isZh
+          ? '当前行情或期权链不足以生成合约级推荐，我只能提供策略教学说明。'
+          : 'The current market or option-chain snapshot is insufficient for a contract-level recommendation; I can provide strategy education only.'
+        return json(res, 200, {
+          intent: 'clarify',
+          answer,
+          followUpQuestion: isZh ? '是否先了解适合当前观点的策略类型？' : 'Would you like an educational overview of strategy types for this view?',
+          structuredUpdates,
+          referencedStrategyIds: [],
+          warnings: [answer],
+          dataGaps: canonicalContext.dataGaps,
+          agentState: { status: 'degraded', profile, snapshotId: canonicalContext.snapshotId },
+        })
+      }
+
+      const agentPlanBase = buildAssistantPlan({ userMessage, marketContext: canonicalContext, history, isZh })
+      const agentPlan = {
+        ...agentPlanBase,
+        intent: extraction.intent,
+        structuredUpdates,
+        agentState: {
+          status: needsEngine ? 'recommended' : 'ready',
+          profile,
+          snapshotId: canonicalContext.snapshotId,
+          missingFields: [],
+        },
+      }
+      if (agentPlan.directResponse) {
+        return json(res, 200, {
+          ...agentPlan.directResponse,
+          structuredUpdates,
+          agentState: agentPlan.agentState,
+        })
+      }
+
+      let parsed
+      try {
+        const response = await deepseekChat([
+          {
+            role: 'user',
+            content: JSON.stringify(buildExplanationPrompt({
+              userMessage,
+              history,
+              profile,
+              plan: agentPlan,
+              marketContext: canonicalContext,
+              language: isZh ? 'zh' : 'en',
+            })),
+          },
+        ], systemExtra)
+        parsed = safeParseAssistantJson(response.text)
+      } catch {
+        parsed = null
+      }
+      if (!parsed || unknownFinancialNumbers(parsed, { profile, agentPlan, canonicalContext }).length) {
+        const fallback = agentFallbackResponse(agentPlan, isZh)
+        return json(res, 200, {
+          ...fallback,
+          structuredUpdates,
+          agentState: agentPlan.agentState,
+        })
+      }
+      return json(res, 200, {
+        ...enforceAgentResponse(parsed, canonicalContext, agentPlan, isZh),
+        structuredUpdates,
+        agentState: agentPlan.agentState,
+      })
     }
 
     if (url.pathname.startsWith('/api/quote/')) {

@@ -33,10 +33,13 @@ import {
 import { recordProductEvent } from './productEventsRuntime.mjs'
 import { getAdminAnalytics } from './adminAnalyticsRuntime.mjs'
 import {
-  isSupportedUnderlying,
-  PREWARM_SYMBOLS,
-  supportedUniversePayload,
-} from './supportedUnderlyings.mjs'
+  normalizeFiuCandles,
+  normalizeFiuExpirations,
+  normalizeFiuOptionChain,
+  normalizeFiuQuote,
+  pruneFiuOptionContracts,
+  volatilityFromContracts,
+} from './fiuData.mjs'
 import { createAuthRuntime } from './auth.mjs'
 import { parseUserView } from '../src/core/parseUserView.ts'
 import { isUsOptionsRegularTradingHours as isUsRegularMarketOpen } from '../src/core/paperTradeEngine.ts'
@@ -58,13 +61,12 @@ const port = Number(process.env.API_PORT || 8787)
 const host = process.env.API_HOST || '127.0.0.1'
 const corsOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:5173'
 const serveStatic = process.env.SERVE_STATIC !== 'false'
-const refreshMs = Number(process.env.QVERIS_REFRESH_MS || 60000)
 const quoteRefreshMs = Number(process.env.QVERIS_QUOTE_REFRESH_MS || 5000)
+const quoteBatchSize = 20
+const activeQuoteWindowMs = 30_000
 const marketRefreshMs = Number(process.env.QVERIS_MARKET_REFRESH_MS || 15000)
-const optionsRefreshMs = Number(process.env.QVERIS_OPTIONS_REFRESH_MS || 180000)
+const optionsRefreshMs = Number(process.env.QVERIS_OPTIONS_REFRESH_MS || 30000)
 const closedCacheMs = Number(process.env.QVERIS_CLOSED_CACHE_MS || 6 * 60 * 60 * 1000)
-const openInterestCacheMs = Number(process.env.QVERIS_OPEN_INTEREST_CACHE_MS || 6 * 60 * 60 * 1000)
-const heavyLimit = Number(process.env.QVERIS_HEAVY_CONCURRENCY || 4)
 const prewarmEnabled = process.env.QVERIS_PREWARM_ENABLED !== 'false'
 const prewarmIntervalMs = Number(process.env.QVERIS_PREWARM_INTERVAL_MS || 15000)
 const upstreamTimeoutMs = Math.max(1000, Number(process.env.QVERIS_UPSTREAM_TIMEOUT_MS || 20000))
@@ -92,36 +94,28 @@ const localAuthUser = {
   email: 'local-dev@qveris.test',
   name: 'Local Dev',
 }
-const prewarmSymbols = String(process.env.QVERIS_PREWARM_SYMBOLS || PREWARM_SYMBOLS.join(','))
+const prewarmSymbols = String(process.env.QVERIS_PREWARM_SYMBOLS || 'SPY,QQQ,NVDA,TSLA,AAPL,MSFT,AMZN,META,AMD,MU')
   .split(',')
   .map((symbol) => tickerFromPath(symbol, ''))
-  .filter(isSupportedUnderlying)
+  .filter(Boolean)
 const marketCache = new Map()
 const quoteCache = new Map()
 const optionsCache = new Map()
-const openInterestCache = new Map()
 const qverisInflight = new Map()
 const prewarmInflight = new Set()
+const activeQuoteTickers = new Map()
 const cacheDir = new URL('../.cache/qveris/', import.meta.url)
 const staticRoot = fileURLToPath(new URL('../dist/', import.meta.url))
-let heavyActive = 0
-const heavyQueue = []
 let prewarmCursor = 0
+let quoteBatchInflight
+let quoteBatchScheduled
 
 // QVeris tool IDs. These are executed only through the QVeris gateway, never by direct vendor API calls.
 const tools = {
-  quote: 'finnhub_io_api.stock.quote',
   liveQuote: 'fiu_mcp_server.postv1stockquote.create.v2.1790f84e',
-  ohlcv: 'eodhd.live_data.real_time.retrieve.v1.b60a4285',
-  intraday: 'alphavantage.time-series.intraday.v1',
-  dailyAdjusted: 'alphavantage.time-series.daily-adjusted.v1',
-  options: 'qveris_finance.opt_chain',
-  thetaQuote: 'theta_data.option.snapshot.quote.retrieve.v3.66abf829',
-  thetaGreeks: 'theta_data.option.snapshot.greeks.firstorder.retrieve.v3.e74251d1',
-  thetaOpenInterest: 'theta_data.option.snapshot.openinterest.retrieve.v3.46f70809',
-  earnings: 'finnhub.calendar.earnings.retrieve.v1',
-  filings: 'finnhub.stock.filings.retrieve.v1',
-  volatility: 'flashalpha_historical.surface.retrieve.v1.a7f0f499',
+  candles: 'fiu_mcp_server.postv1chartklinelist.create.v2.41a84fef',
+  optionExpirations: 'fiu_mcp_server.postoprav1chainexpiration.create.v2.708b0fcc',
+  optionChain: 'fiu_mcp_server.postoprav1chainquery.create.v2.d591d0f8',
 }
 
 function json(res, status, body) {
@@ -189,14 +183,12 @@ function requireAdmin(user) {
   if (!isAdmin(user)) throw safeError('Administrator access is required.', 403)
 }
 
-function toNumber(value) {
-  if (value === null || value === undefined || value === '') return null
-  const number = Number(value)
-  return Number.isFinite(number) ? number : null
-}
-
 function tickerFromPath(pathname, prefix) {
   return decodeURIComponent(pathname.slice(prefix.length)).trim().toUpperCase().replace(/[^A-Z0-9.-]/g, '')
+}
+
+function stockQuoteParameters(tickers) {
+  return { fields: ['snapshot'], symbols: tickers.map((ticker) => `${ticker}.US`), timeMode: 0 }
 }
 
 function requireKey() {
@@ -211,12 +203,6 @@ function requireDeepSeekKey() {
     throw safeError('DEEPSEEK_API_KEY is not configured. Copy .env.example to .env.local and set the key.', 500)
   }
   return process.env.DEEPSEEK_API_KEY
-}
-
-function requireSupportedTicker(ticker) {
-  if (!isSupportedUnderlying(ticker)) {
-    throw safeError('UNSUPPORTED_UNDERLYING: Qveris currently supports 100 high-option-volume stocks and 20 ETFs.', 400)
-  }
 }
 
 async function readJson(req) {
@@ -268,7 +254,11 @@ async function qverisExecuteNow(toolId, parameters, maxResponseSize = 20000) {
   if (!response.ok || payload.success === false) {
     throw safeError(`QVeris tool execution failed: ${toolId}`, payload?.result?.status_code || response.status || 502)
   }
-  return payload.result?.data ?? payload.result
+  const result = payload.result?.data ?? payload.result
+  if (result && typeof result === 'object' && 'code' in result && Number(result.code) !== 200) {
+    throw safeError(`QVeris provider rejected the request: ${result.msg || result.message || toolId}`, 502)
+  }
+  return result
 }
 
 async function qverisExecute(toolId, parameters, maxResponseSize = 20000) {
@@ -277,19 +267,6 @@ async function qverisExecute(toolId, parameters, maxResponseSize = 20000) {
   const run = qverisExecuteNow(toolId, parameters, maxResponseSize).finally(() => qverisInflight.delete(key))
   qverisInflight.set(key, run)
   return run
-}
-
-async function qverisHeavyExecute(toolId, parameters, maxResponseSize = 20000) {
-  const key = `${toolId}:${maxResponseSize}:${JSON.stringify(parameters)}`
-  if (qverisInflight.has(key)) return qverisInflight.get(key)
-  if (heavyActive >= heavyLimit) await new Promise((resolve) => heavyQueue.push(resolve))
-  heavyActive += 1
-  try {
-    return await qverisExecute(toolId, parameters, maxResponseSize)
-  } finally {
-    heavyActive -= 1
-    heavyQueue.shift()?.()
-  }
 }
 
 function cached(cache, bucket, key) {
@@ -308,7 +285,7 @@ function cached(cache, bucket, key) {
 }
 
 function cacheSet(cache, bucket, key, body, ttlMs) {
-  const entry = { body, expires: Date.now() + (ttlMs ?? (isUsRegularMarketOpen() ? refreshMs : closedCacheMs)) }
+  const entry = { body, expires: Date.now() + ttlMs }
   cache.set(key, entry)
   try {
     mkdirSync(cacheDir, { recursive: true })
@@ -321,12 +298,61 @@ function cacheFile(bucket, key) {
   return new URL(`${bucket}-${encodeURIComponent(key)}.json`, cacheDir)
 }
 
+function activeQuoteSymbols(now = Date.now()) {
+  const cutoff = now - activeQuoteWindowMs
+  const active = []
+  for (const [ticker, activeAt] of activeQuoteTickers) {
+    if (activeAt < cutoff) activeQuoteTickers.delete(ticker)
+    else active.push([ticker, activeAt])
+  }
+  active.sort(([, a], [, b]) => b - a)
+  const symbols = new Set(active.slice(0, quoteBatchSize).map(([ticker]) => ticker))
+  for (const ticker of prewarmEnabled ? prewarmSymbols : []) {
+    if (symbols.size >= quoteBatchSize) break
+    symbols.add(ticker)
+  }
+  return [...symbols]
+}
+
+function refreshActiveQuotes() {
+  const tickers = activeQuoteSymbols()
+  if (!isUsRegularMarketOpen() || !tickers.length || quoteBatchInflight) return quoteBatchInflight
+  const run = qverisExecute(tools.liveQuote, stockQuoteParameters(tickers))
+    .then((result) => {
+      for (const ticker of tickers) {
+        const quote = validLiveQuote(ticker, result)
+        if (quote) cacheSet(quoteCache, 'quote', `fiu-quote-v1:${ticker}`, quote, quoteRefreshMs)
+      }
+    })
+    .catch(() => {})
+    .finally(() => { quoteBatchInflight = undefined })
+  quoteBatchInflight = run
+  return run
+}
+
+function scheduleQuoteRefresh() {
+  if (!isUsRegularMarketOpen()) return undefined
+  if (quoteBatchInflight) return quoteBatchInflight
+  if (!quoteBatchScheduled) {
+    quoteBatchScheduled = new Promise((resolve) => setTimeout(resolve, 25))
+      .then(refreshActiveQuotes)
+      .finally(() => { quoteBatchScheduled = undefined })
+  }
+  return quoteBatchScheduled
+}
+
+function startQuoteRefresh() {
+  refreshActiveQuotes()
+  const timer = setInterval(refreshActiveQuotes, quoteRefreshMs)
+  timer.unref?.()
+}
+
 function startPrewarm(origin) {
   if (!prewarmEnabled || !prewarmSymbols.length) return
   const timer = setInterval(() => {
     if (!isUsRegularMarketOpen()) return
     const symbol = prewarmSymbols[prewarmCursor++ % prewarmSymbols.length]
-    if (prewarmInflight.has(symbol) || cached(optionsCache, 'options', `${symbol}:open`)) return
+    if (prewarmInflight.has(symbol) || cached(optionsCache, 'options', `fiu-opra-v3:${symbol}:open`)) return
     prewarmInflight.add(symbol)
     fetch(`${origin}/api/options/${symbol}?live=1`, {
       headers: { 'x-options-internal-token': authRuntime.internalToken },
@@ -467,17 +493,6 @@ function isOutOfScopeAssistantMessage(message) {
   return blocked.some((word) => text.includes(word)) && !allowed.some((word) => text.includes(word))
 }
 
-function parseMaybeTruncated(result) {
-  if (result?.truncated_content) {
-    try {
-      return JSON.parse(result.truncated_content)
-    } catch {
-      return []
-    }
-  }
-  return result
-}
-
 function parseJsonQuery(value) {
   if (!value) return undefined
   try {
@@ -487,394 +502,45 @@ function parseJsonQuery(value) {
   }
 }
 
-async function parseToolContent(result) {
-  if (result?.full_content_file_url) {
-    try {
-      const response = await fetch(result.full_content_file_url, { signal: AbortSignal.timeout(upstreamTimeoutMs) })
-      if (response.ok) return response.json()
-    } catch {}
-  }
-  return parseMaybeTruncated(result)
-}
-
 function marketRangeParams(range) {
   const normalized = String(range || '1h').toLowerCase()
   const table = {
-    '15m': { range: '5d', period: '5d', from: daysAgo(8), kind: 'intraday', interval: '15min', tradingDays: 5 },
-    '30m': { range: '5d', period: '5d', from: daysAgo(8), kind: 'intraday', interval: '30min', tradingDays: 5 },
-    '1h': { range: '1m', period: '1m', from: daysAgo(35), kind: 'intraday', interval: '60min', tradingDays: 22 },
-    '4h': { range: '1m', period: '1m', from: daysAgo(35), kind: 'intraday', interval: '60min', tradingDays: 22, aggregate: 4 },
-    '1d': { range: '1y', period: 'd', from: daysAgo(370), kind: 'daily', candles: 252, outputsize: 'full' },
-    '5d': { range: '5d', period: '5d', from: daysAgo(8), kind: 'intraday', interval: '30min', tradingDays: 5 },
-    '1m': { range: '1m', period: '1m', from: daysAgo(35), kind: 'intraday', interval: '60min', tradingDays: 22 },
-    daily: { range: '6m', period: 'd', from: daysAgo(190), kind: 'daily', candles: 126, outputsize: 'compact' },
-    '3m': { range: '3m', period: '3m', from: daysAgo(100), kind: 'daily', candles: 66, outputsize: 'compact' },
-    '1y': { range: '1y', period: '1y', from: daysAgo(370), kind: 'daily', candles: 252, outputsize: 'full' },
-    '5y': { range: '5y', period: '5y', from: daysAgo(370 * 5), kind: 'daily', candles: 1260, outputsize: 'full', weekly: true },
+    '15m': { kind: 'intraday', fiuType: 7, pageSize: 140 },
+    '30m': { kind: 'intraday', fiuType: 8, pageSize: 140 },
+    '1h': { kind: 'intraday', fiuType: 9, pageSize: 160 },
+    '4h': { kind: 'intraday', fiuType: 12, pageSize: 160 },
+    '1d': { kind: 'daily', fiuType: 0, pageSize: 252 },
+    '5d': { kind: 'intraday', fiuType: 8, pageSize: 140 },
+    '1m': { kind: 'intraday', fiuType: 9, pageSize: 160 },
+    daily: { kind: 'daily', fiuType: 0, pageSize: 126 },
+    '3m': { kind: 'daily', fiuType: 0, pageSize: 66 },
+    '1y': { kind: 'daily', fiuType: 0, pageSize: 252 },
+    '5y': { kind: 'daily', fiuType: 1, pageSize: 260 },
   }
   return table[normalized] ?? table['1h']
 }
 
-function daysAgo(days) {
-  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-}
-
-function normalizeCandles(result) {
-  const rows = Array.isArray(result)
-    ? result
-    : result?.candles ?? result?.data ?? result?.historical ?? result?.prices ?? result?.values ?? []
-  if (!Array.isArray(rows)) return []
-  return rows
-    .map((row) => {
-      const time = normalizeCandleTime(row.time ?? row.date ?? row.datetime ?? row.timestamp)
-      const open = toNumber(row.open ?? row.o)
-      const high = toNumber(row.high ?? row.h)
-      const low = toNumber(row.low ?? row.l)
-      const close = toNumber(row.close ?? row.c ?? row.adjusted_close)
-      if (!time || open === null || high === null || low === null || close === null) return null
-      return {
-        time,
-        open,
-        high,
-        low,
-        close,
-        volume: toNumber(row.volume ?? row.v),
-      }
-    })
-    .filter(Boolean)
-}
-
-function normalizeCandleTime(value) {
-  if (typeof value === 'number') return value > 1e12 ? Math.floor(value / 1000) : value
-  const raw = String(value ?? '')
-  if (!raw) return ''
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw
-  const parsed = Date.parse(raw.includes('T') ? raw : raw.replace(' ', 'T'))
-  return Number.isNaN(parsed) ? raw.slice(0, 10) : Math.floor(parsed / 1000)
-}
-
-function normalizeQuote(ticker, quoteResult, ohlcvResult) {
-  const quote = quoteResult || {}
-  const ohlcv = ohlcvResult || {}
-  const candles = normalizeCandles(ohlcv)
-  const timestamp = Number(quote.t ?? ohlcv.timestamp ?? 0)
+function emptyQuote(ticker) {
   return {
     ticker,
-    price: toNumber(quote.c ?? ohlcv.close),
-    open: toNumber(quote.o ?? ohlcv.open),
-    high: toNumber(quote.h ?? ohlcv.high),
-    low: toNumber(quote.l ?? ohlcv.low),
-    previousClose: toNumber(quote.pc ?? ohlcv.previousClose),
-    change: toNumber(quote.d ?? ohlcv.change),
-    changePercent: toNumber(quote.dp ?? ohlcv.change_p),
-    volume: toNumber(ohlcv.volume),
-    timestamp,
-    asOf: timestamp ? new Date(timestamp * 1000).toISOString() : new Date().toISOString(),
+    price: null,
+    open: null,
+    high: null,
+    low: null,
+    previousClose: null,
+    change: null,
+    changePercent: null,
+    volume: null,
+    timestamp: 0,
+    asOf: new Date().toISOString(),
     source: 'QVeris',
-    candles,
-  }
-}
-
-function normalizeLiveQuote(ticker, result) {
-  const fiuRow = Array.isArray(result?.body)
-    ? result.body.find((item) => String(item?.symbol ?? '').toUpperCase() === `${ticker}.US`)
-    : undefined
-  const data = fiuRow?.snapshot ?? result?.data?.[`${ticker}.US`] ?? result?.data?.[ticker] ?? result?.[`${ticker}.US`] ?? result?.[ticker] ?? result?.data ?? result
-  const lastTradeMs = toNumber(data?.lastTradeTime ?? data?.timestamp ?? Date.parse(String(data?.time ?? '')))
-  const timestamp = lastTradeMs && lastTradeMs > 1e12 ? Math.floor(lastTradeMs / 1000) : lastTradeMs
-  const price = toNumber(data?.lastTradePrice ?? data?.price ?? data?.last ?? data?.close ?? data?.ethPrice)
-  const previousClose = toNumber(data?.previousClosePrice ?? data?.previousClose ?? data?.preClose)
-  const change = toNumber(data?.change) ?? (price !== null && previousClose !== null ? price - previousClose : null)
-  return {
-    ticker,
-    price,
-    open: toNumber(data?.open),
-    high: toNumber(data?.high),
-    low: toNumber(data?.low),
-    previousClose,
-    change,
-    changePercent: toNumber(data?.changePercent ?? data?.changeRate),
-    volume: toNumber(data?.volume ?? data?.size),
-    timestamp: timestamp ?? 0,
-    asOf: timestamp ? new Date(timestamp * 1000).toISOString() : new Date().toISOString(),
-    source: 'QVeris',
-    marketDataType: fiuRow ? 'realtime_quote' : 'delayed_quote',
     candles: [],
   }
 }
 
-function mergeLiveQuoteCandle(candles, quote, kind) {
-  if (!quote?.price || !quote.timestamp) return candles
-  const copy = [...candles]
-  if (!copy.length) return copy
-  const liveDate = new Date(quote.timestamp * 1000).toISOString().slice(0, 10)
-  const last = copy.at(-1)
-  const lastDate = typeof last?.time === 'number'
-    ? new Date(last.time * 1000).toISOString().slice(0, 10)
-    : String(last?.time ?? '').slice(0, 10)
-  const liveTime = kind === 'daily' ? liveDate : quote.timestamp
-  const lastTime = typeof last?.time === 'number'
-    ? last.time
-    : Math.floor(Date.parse(`${String(last?.time ?? '')}T00:00:00Z`) / 1000)
-
-  // Some after-hours quote providers return the prior close timestamp while
-  // historical bars already include later extended-hours candles. Never move
-  // the final candle backwards: lightweight-charts requires ascending times.
-  if (Number.isFinite(lastTime) && quote.timestamp < lastTime) return copy
-
-  const fullDayCandle = {
-    time: liveTime,
-    open: quote.open ?? quote.price,
-    high: quote.high ?? quote.price,
-    low: quote.low ?? quote.price,
-    close: quote.price,
-    volume: quote.volume,
-  }
-  if (kind === 'daily') {
-    if (lastDate === liveDate) copy[copy.length - 1] = { ...last, ...fullDayCandle }
-    else copy.push(fullDayCandle)
-    return copy
-  }
-  const intervalCandle = {
-    time: liveTime,
-    open: quote.timestamp === lastTime ? (last?.open ?? quote.price) : quote.price,
-    high: quote.timestamp === lastTime ? Math.max(last?.high ?? quote.price, quote.price) : quote.price,
-    low: quote.timestamp === lastTime ? Math.min(last?.low ?? quote.price, quote.price) : quote.price,
-    close: quote.price,
-    volume: quote.timestamp === lastTime ? (last?.volume ?? null) : null,
-  }
-  if (quote.timestamp === lastTime) copy[copy.length - 1] = { ...last, ...intervalCandle }
-  else copy.push(intervalCandle)
-  return copy
-}
-
-async function normalizeDailyCandles(result, limit) {
-  const parsed = await parseToolContent(result)
-  const series = parsed?.['Time Series (Daily)'] ?? {}
-  const candles = Object.entries(series)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .slice(-limit)
-    .map(([time, row]) => {
-      const open = toNumber(row['1. open'])
-      const high = toNumber(row['2. high'])
-      const low = toNumber(row['3. low'])
-      const close = toNumber(row['5. adjusted close'] ?? row['4. close'])
-      if (open === null || high === null || low === null || close === null) return null
-      return {
-        time,
-        open,
-        high,
-        low,
-        close,
-        volume: toNumber(row['6. volume']),
-      }
-    })
-    .filter(Boolean)
-  return candles
-}
-
-async function normalizeIntradayCandles(result, tradingDays) {
-  const parsed = await parseToolContent(result)
-  const key = Object.keys(parsed ?? {}).find((name) => name.startsWith('Time Series'))
-  const series = key ? parsed[key] : {}
-  const rows = Object.entries(series).sort(([a], [b]) => a.localeCompare(b))
-  const dates = [...new Set(rows.map(([time]) => time.slice(0, 10)))].slice(-tradingDays)
-  const keep = new Set(dates)
-  return rows
-    .filter(([time]) => keep.has(time.slice(0, 10)))
-    .map(([time, row]) => {
-      const open = toNumber(row['1. open'])
-      const high = toNumber(row['2. high'])
-      const low = toNumber(row['3. low'])
-      const close = toNumber(row['4. close'])
-      if (open === null || high === null || low === null || close === null) return null
-      return {
-        time: Math.floor(Date.parse(`${time.replace(' ', 'T')}-04:00`) / 1000),
-        open,
-        high,
-        low,
-        close,
-        volume: toNumber(row['5. volume']),
-      }
-    })
-    .filter(Boolean)
-}
-
-function aggregateCandles(candles, size) {
-  if (!size || size <= 1) return candles
-  const result = []
-  for (let i = 0; i < candles.length; i += size) {
-    const chunk = candles.slice(i, i + size)
-    result.push({
-      time: chunk.at(-1).time,
-      open: chunk[0].open,
-      high: Math.max(...chunk.map((candle) => candle.high)),
-      low: Math.min(...chunk.map((candle) => candle.low)),
-      close: chunk.at(-1).close,
-      volume: chunk.reduce((sum, candle) => sum + (candle.volume ?? 0), 0),
-    })
-  }
-  return result
-}
-
-function weeklyCandles(candles) {
-  const result = []
-  for (let i = 0; i < candles.length; i += 5) {
-    const chunk = candles.slice(i, i + 5)
-    result.push({
-      time: chunk.at(-1).time,
-      open: chunk[0].open,
-      high: Math.max(...chunk.map((candle) => candle.high)),
-      low: Math.min(...chunk.map((candle) => candle.low)),
-      close: chunk.at(-1).close,
-      volume: chunk.reduce((sum, candle) => sum + (candle.volume ?? 0), 0),
-    })
-  }
-  return result
-}
-
-function normalizeOptions(ticker, result, spot) {
-  const rows = Array.isArray(result) ? result : parseMaybeTruncated(result)
-  if (!Array.isArray(rows)) return []
-  const today = new Date().toISOString().slice(0, 10)
-  const normalized = rows
-    .map((row) => {
-      const right = String(row.option_type ?? row.type ?? '').toLowerCase()
-      if (right !== 'call' && right !== 'put') return null
-      const expiration = String(row.expiry ?? row.expiration ?? '')
-      return {
-        quoteDate: String(row.date ?? ''),
-        symbol: String(row.name ?? row.contractID ?? row.contract_id ?? row.symbol ?? ''),
-        underlying: ticker,
-        expiration,
-        strike: toNumber(row.strike),
-        right,
-        bid: toNumber(row.bid),
-        ask: toNumber(row.ask),
-        last: toNumber(row.price ?? row.last ?? row.mark),
-        bidSize: toNumber(row.bid_size),
-        askSize: toNumber(row.ask_size),
-        volume: toNumber(row.volume),
-        openInterest: toNumber(row.open_interest),
-        impliedVolatility: toNumber(row.iv ?? row.implied_volatility),
-        delta: toNumber(row.delta),
-        gamma: toNumber(row.gamma),
-        theta: toNumber(row.theta),
-        vega: toNumber(row.vega),
-      }
-    })
-    .filter(Boolean)
-    .filter((contract) => contract.expiration >= today)
-    .sort((a, b) =>
-      String(a.expiration).localeCompare(String(b.expiration)) ||
-      (a.strike ?? 0) - (b.strike ?? 0) ||
-      String(a.right).localeCompare(String(b.right)),
-    )
-  const effectiveSpot = typeof spot === 'number' && Number.isFinite(spot)
-    ? spot
-    : estimateSpotFromOptions(normalized)
-  if (typeof effectiveSpot !== 'number' || !Number.isFinite(effectiveSpot)) {
-    return { contracts: normalized.slice(0, 500), effectiveSpot: null }
-  }
-  const byExpiry = new Map()
-  for (const contract of normalized) {
-    const list = byExpiry.get(contract.expiration) ?? []
-    list.push(contract)
-    byExpiry.set(contract.expiration, list)
-  }
-  const pruned = []
-  for (const expiry of selectUsefulExpirations([...byExpiry.keys()], today)) {
-    const contracts = byExpiry.get(expiry) ?? []
-    const strikes = [...new Set(contracts.map((contract) => contract.strike).filter((strike) => typeof strike === 'number'))]
-      .sort((a, b) => Math.abs(a - effectiveSpot) - Math.abs(b - effectiveSpot))
-      .slice(0, 25)
-    const keep = new Set(strikes)
-    pruned.push(...contracts.filter((contract) => keep.has(contract.strike)))
-  }
-  return { contracts: pruned.slice(0, 600), effectiveSpot }
-}
-
-function columnRows(result) {
-  const data = parseMaybeTruncated(result)
-  if (!data) return []
-  if (Array.isArray(data)) return data
-  if (Array.isArray(data.response)) {
-    return data.response.flatMap((item) => {
-      const contract = item?.contract && typeof item.contract === 'object' ? item.contract : {}
-      const rows = Array.isArray(item?.data) ? item.data : []
-      return rows.map((row) => ({ ...contract, ...row }))
-    })
-  }
-  const keys = Object.keys(data).filter((key) => Array.isArray(data[key]))
-  const length = Math.max(0, ...keys.map((key) => data[key].length))
-  return Array.from({ length }, (_, index) => Object.fromEntries(keys.map((key) => [key, data[key][index]])))
-}
-
-function optionKey(row) {
-  const right = String(row.right ?? '').toLowerCase()
-  return [row.symbol, row.expiration, Number(row.strike), right].join('|')
-}
-
-async function getThetaOpenInterest(ticker) {
-  const cacheKey = `${ticker}:snapshot`
-  const cachedBody = cached(openInterestCache, 'theta-open-interest', cacheKey)
-  if (cachedBody) return cachedBody
-  const result = await qverisHeavyExecute(tools.thetaOpenInterest, {
-    symbol: ticker,
-    expiration: '*',
-    strike: '*',
-    right: 'both',
-    max_dte: 220,
-    strike_range: 25,
-    format: 'json',
-  }, 100000)
-  const rows = columnRows(await parseToolContent(result))
-  if (rows.length) return cacheSet(openInterestCache, 'theta-open-interest', cacheKey, rows, openInterestCacheMs)
-  return rows
-}
-
-function normalizeThetaOptions(ticker, quoteResult, marketValueResult, greeksResult, openInterestResult, spot) {
-  const byKey = new Map()
-  for (const row of columnRows(quoteResult)) byKey.set(optionKey(row), { ...row })
-  for (const source of [marketValueResult, greeksResult, openInterestResult]) {
-    for (const row of columnRows(source)) {
-      const key = optionKey(row)
-      byKey.set(key, { ...(byKey.get(key) ?? {}), ...row })
-    }
-  }
-  const rows = [...byKey.values()].map((row) => ({
-    date: String(row.timestamp ?? ''),
-    name: `${ticker} ${row.expiration} ${row.right} ${row.strike}`,
-    option_type: String(row.right ?? '').toLowerCase(),
-    expiry: String(row.expiration ?? ''),
-    strike: row.strike,
-    bid: row.bid ?? row.market_bid,
-    ask: row.ask ?? row.market_ask,
-    price: row.market_price,
-    bid_size: row.bid_size,
-    ask_size: row.ask_size,
-    iv: row.implied_vol,
-    open_interest: row.open_interest ?? row.openInterest ?? row.oi,
-    delta: row.delta,
-    gamma: row.gamma,
-    theta: row.theta,
-    vega: row.vega,
-  }))
-  return normalizeOptions(ticker, rows, spot)
-}
-
-function estimateSpotFromOptions(contracts) {
-  const today = Date.parse(new Date().toISOString().slice(0, 10))
-  const withDte = contracts
-    .filter((item) => typeof item.delta === 'number' && typeof item.strike === 'number')
-    .map((item) => ({
-      ...item,
-      dte: Math.ceil((Date.parse(`${item.expiration}T00:00:00Z`) - today) / 86400000),
-    }))
-  const nearTerm = withDte.filter((item) => item.dte >= 7 && item.dte <= 60)
-  const contract = (nearTerm.length ? nearTerm : withDte)
-    .sort((a, b) => Math.abs(Math.abs(a.delta) - 0.5) - Math.abs(Math.abs(b.delta) - 0.5))[0]
-  return contract?.strike
+function validLiveQuote(ticker, result) {
+  const quote = normalizeFiuQuote(ticker, result)
+  return quote.price && quote.timestamp ? quote : null
 }
 
 function selectUsefulExpirations(expirations, today) {
@@ -909,52 +575,6 @@ function unavailableOptions(ticker, message) {
   }
 }
 
-function normalizeEvents(ticker, earningsResult, filingsResult) {
-  const filings = parseMaybeTruncated(filingsResult)
-  return {
-    ticker,
-    earnings: (earningsResult?.earningsCalendar || []).slice(0, 8).map((row) => ({
-      symbol: String(row.symbol ?? ticker),
-      date: String(row.date ?? ''),
-      hour: String(row.hour ?? ''),
-      quarter: toNumber(row.quarter),
-      year: toNumber(row.year),
-      epsEstimate: row.epsEstimate ?? null,
-      epsActual: row.epsActual ?? null,
-      revenueEstimate: row.revenueEstimate ?? null,
-      revenueActual: row.revenueActual ?? null,
-    })),
-    filings: (Array.isArray(filings) ? filings : []).slice(0, 12).map((row) => ({
-      accessNumber: String(row.accessNumber ?? ''),
-      symbol: String(row.symbol ?? ticker),
-      cik: String(row.cik ?? ''),
-      form: String(row.form ?? ''),
-      filedDate: String(row.filedDate ?? ''),
-      acceptedDate: String(row.acceptedDate ?? ''),
-      reportUrl: String(row.reportUrl ?? ''),
-      filingUrl: String(row.filingUrl ?? ''),
-    })),
-    dataGaps: [],
-  }
-}
-
-function normalizeVolatility(ticker, result) {
-  const surface = parseMaybeTruncated(result)
-  const hasSurface = Array.isArray(surface?.tenors) && Array.isArray(surface?.moneyness) && Array.isArray(surface?.iv)
-  return {
-    ticker,
-    spot: toNumber(surface?.spot),
-    asOf: String(surface?.as_of ?? ''),
-    tenors: Array.isArray(surface?.tenors) ? surface.tenors.slice(0, 40).map(toNumber) : [],
-    moneyness: Array.isArray(surface?.moneyness) ? surface.moneyness.slice(0, 60).map(toNumber) : [],
-    iv: Array.isArray(surface?.iv) ? surface.iv.slice(0, 20).map((row) => row.slice(0, 30).map(toNumber)) : [],
-    dataGaps: [
-      'QVERIS_DATA_GAP: IV Rank/Percentile unavailable; using volatility surface only.',
-      ...(hasSurface ? [] : ['QVERIS_DATA_GAP: volatility surface grid unavailable for this symbol/tool response.']),
-    ],
-  }
-}
-
 async function handle(req, res) {
   try {
     if (req.method === 'OPTIONS') return json(res, 204, {})
@@ -969,10 +589,6 @@ async function handle(req, res) {
     const authUser = localAuthBypass ? localAuthUser : authRuntime.currentUser(req)
     if (url.pathname.startsWith('/api/') && !authUser) {
       return json(res, 401, { error: 'Authentication required.' })
-    }
-
-    if (url.pathname === '/api/supported-underlyings') {
-      return json(res, 200, supportedUniversePayload())
     }
 
     if (url.pathname === '/api/admin/analytics' && req.method === 'GET') {
@@ -1206,69 +822,50 @@ async function handle(req, res) {
     if (url.pathname.startsWith('/api/quote/')) {
       const ticker = tickerFromPath(url.pathname, '/api/quote/')
       if (!ticker) throw safeError('Ticker is required.', 400)
-      requireSupportedTicker(ticker)
-      const cacheKey = ticker
+      activeQuoteTickers.set(ticker, Date.now())
+      const cacheKey = `fiu-quote-v1:${ticker}`
       const cachedBody = cached(quoteCache, 'quote', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)
-      const quote = normalizeLiveQuote(ticker, await qverisExecute(tools.liveQuote, {
-        fields: ['snapshot'],
-        symbols: [`${ticker}.US`],
-        timeMode: 0,
-      }))
+      if (quoteBatchInflight) await quoteBatchInflight
+      let refreshedBody = cached(quoteCache, 'quote', cacheKey)
+      if (!refreshedBody) {
+        await scheduleQuoteRefresh()
+        refreshedBody = cached(quoteCache, 'quote', cacheKey)
+      }
+      if (refreshedBody) return json(res, 200, refreshedBody)
+      const quote = validLiveQuote(ticker, await qverisExecute(tools.liveQuote, stockQuoteParameters([ticker])))
+      if (!quote) throw safeError('FIU realtime quote is unavailable.')
       return json(res, 200, cacheSet(quoteCache, 'quote', cacheKey, quote, quoteRefreshMs))
     }
 
     if (url.pathname.startsWith('/api/market/')) {
       const ticker = tickerFromPath(url.pathname, '/api/market/')
       if (!ticker) throw safeError('Ticker is required.', 400)
-      requireSupportedTicker(ticker)
       const range = url.searchParams.get('range') || '1h'
-      const cacheKey = `${ticker}:${range}:${isUsRegularMarketOpen() ? 'open' : 'closed'}`
+      const cacheKey = `fiu-market-v2:${ticker}:${range}:${isUsRegularMarketOpen() ? 'open' : 'closed'}`
       const cachedBody = cached(marketCache, 'market', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)
       const rangeParams = marketRangeParams(range)
-      const [liveQuoteResult, ohlcvResult, historyResult] = await Promise.allSettled([
-        qverisExecute(tools.liveQuote, { fields: ['snapshot'], symbols: [`${ticker}.US`], timeMode: 0 }),
-        qverisExecute(tools.ohlcv, {
+      const date = new Date().toISOString().slice(0, 10)
+      const [liveQuoteResult, candlesResult] = await Promise.allSettled([
+        qverisExecute(tools.liveQuote, stockQuoteParameters([ticker])),
+        qverisExecute(tools.candles, {
+          candleMode: 1,
+          timeMode: 0,
+          type: rangeParams.fiuType,
+          date: rangeParams.kind === 'daily' ? date : `${date} 23:59:59`,
           symbol: `${ticker}.US`,
-          fmt: 'json',
-          range: rangeParams.range,
-          period: rangeParams.period,
-          from: rangeParams.from,
-          to: new Date().toISOString().slice(0, 10),
-        }),
-        rangeParams.kind === 'intraday' ? qverisExecute(tools.intraday, {
-            function: 'TIME_SERIES_INTRADAY',
-            symbol: ticker,
-            interval: rangeParams.interval,
-            adjusted: true,
-            extended_hours: false,
-            outputsize: 'full',
-            datatype: 'json',
-          }, 50000)
-        : qverisExecute(tools.dailyAdjusted, {
-            function: 'TIME_SERIES_DAILY_ADJUSTED',
-            symbol: ticker,
-            outputsize: rangeParams.outputsize,
-            datatype: 'json',
-          }, rangeParams.outputsize === 'full' ? 50000 : 60000),
+          pageNum: 1,
+          pageSize: rangeParams.pageSize,
+        }, 100000),
       ])
       const dataGaps = []
-      const liveQuote = liveQuoteResult.status === 'fulfilled' ? normalizeLiveQuote(ticker, liveQuoteResult.value) : null
-      const ohlcv = ohlcvResult.status === 'fulfilled' ? ohlcvResult.value : {}
-      if (liveQuoteResult.status === 'rejected') dataGaps.push(`QVERIS_MARKET_GAP: delayed quote snapshot unavailable (${liveQuoteResult.reason.message}).`)
-      if (ohlcvResult.status === 'rejected') dataGaps.push(`QVERIS_MARKET_GAP: realtime OHLC unavailable (${ohlcvResult.reason.message}).`)
-      const fallbackSnapshot = normalizeQuote(ticker, {}, ohlcv)
-      const snapshot = liveQuote?.price ? { ...fallbackSnapshot, ...liveQuote } : fallbackSnapshot
-      const rawCandles = historyResult.status === 'fulfilled'
-        ? rangeParams.kind === 'intraday'
-          ? await normalizeIntradayCandles(historyResult.value, rangeParams.tradingDays)
-          : await normalizeDailyCandles(historyResult.value, rangeParams.candles)
-        : []
-      if (historyResult.status === 'rejected') dataGaps.push(`QVERIS_MARKET_GAP: historical candles unavailable (${historyResult.reason.message}).`)
-      const candles = rangeParams.weekly ? weeklyCandles(rawCandles) : aggregateCandles(rawCandles, rangeParams.aggregate)
-      const finalCandles = mergeLiveQuoteCandle(candles.length ? candles : snapshot.candles, snapshot, rangeParams.kind)
-      const lastCandle = finalCandles?.at(-1)
+      const liveQuote = liveQuoteResult.status === 'fulfilled' ? validLiveQuote(ticker, liveQuoteResult.value) : null
+      if (!liveQuote) dataGaps.push(`QVERIS_MARKET_GAP: realtime quote snapshot unavailable (${liveQuoteResult.reason?.message ?? 'empty response'}).`)
+      const candles = candlesResult.status === 'fulfilled' ? normalizeFiuCandles(candlesResult.value) : []
+      if (candlesResult.status === 'rejected' || !candles.length) dataGaps.push(`QVERIS_MARKET_GAP: FIU OHLCV unavailable (${candlesResult.reason?.message ?? 'empty response'}).`)
+      const snapshot = liveQuote ?? emptyQuote(ticker)
+      const lastCandle = candles.at(-1)
       return json(res, 200, cacheSet(marketCache, 'market', cacheKey, {
         ...snapshot,
         price: snapshot.price ?? lastCandle?.close ?? null,
@@ -1276,89 +873,66 @@ async function handle(req, res) {
         high: snapshot.high ?? lastCandle?.high ?? null,
         low: snapshot.low ?? lastCandle?.low ?? null,
         volume: snapshot.volume ?? lastCandle?.volume ?? null,
-        candles: finalCandles,
+        candles,
         dataGaps,
-        message: dataGaps.length ? 'QVeris market data loaded with partial fallback.' : 'QVeris delayed quote and chart data loaded.',
+        message: dataGaps.length ? 'FIU market data loaded with explicit gaps.' : 'FIU realtime quote and OHLCV loaded through QVeris.',
       }, marketRefreshMs))
     }
 
     if (url.pathname.startsWith('/api/options/')) {
       const ticker = tickerFromPath(url.pathname, '/api/options/')
       if (!ticker) throw safeError('Ticker is required.', 400)
-      requireSupportedTicker(ticker)
       const marketOpen = isUsRegularMarketOpen()
-      // Theta is the primary chain source in every session; market hours only change refresh behavior.
-      const useTheta = true
-      const cacheKey = `${ticker}:${marketOpen ? 'open' : 'closed'}`
+      const cacheKey = `fiu-opra-v3:${ticker}:${marketOpen ? 'open' : 'closed'}`
       const cachedBody = cached(optionsCache, 'options', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)
       try {
-        const [liveQuoteResult, raw, thetaQuote, thetaGreeks, thetaOpenInterest] = await Promise.allSettled([
-          qverisExecute(tools.liveQuote, { fields: ['snapshot'], symbols: [`${ticker}.US`], timeMode: 0 }),
-          useTheta ? Promise.resolve(null) : qverisHeavyExecute(tools.options, { symbol: ticker, market: 'US' }, 24000),
-          useTheta ? qverisHeavyExecute(tools.thetaQuote, { symbol: ticker, expiration: '*', strike: '*', right: 'both', max_dte: 220, strike_range: 25, format: 'json' }, 100000) : Promise.resolve(null),
-          useTheta ? qverisHeavyExecute(tools.thetaGreeks, { symbol: ticker, expiration: '*', strike: '*', right: 'both', max_dte: 220, strike_range: 25, format: 'json' }, 100000) : Promise.resolve(null),
-          useTheta ? getThetaOpenInterest(ticker) : Promise.resolve(null),
+        const [liveQuoteResult, expirationResult] = await Promise.allSettled([
+          qverisExecute(tools.liveQuote, stockQuoteParameters([ticker])),
+          qverisExecute(tools.optionExpirations, { requestBody: { root: ticker } }, 30000),
         ])
-        const liveQuote = liveQuoteResult.status === 'fulfilled' ? normalizeLiveQuote(ticker, liveQuoteResult.value) : null
+        const liveQuote = liveQuoteResult.status === 'fulfilled' ? validLiveQuote(ticker, liveQuoteResult.value) : null
         const quoteSpot = liveQuote?.price ?? null
-        let source = 'qveris_finance'
-        let normalized
-        if (useTheta && thetaQuote.status === 'fulfilled' && thetaGreeks.status === 'fulfilled') {
-          normalized = normalizeThetaOptions(
-            ticker,
-            await parseToolContent(thetaQuote.value),
-            null,
-            await parseToolContent(thetaGreeks.value),
-            thetaOpenInterest.status === 'fulfilled' ? thetaOpenInterest.value : [],
-            quoteSpot,
-          )
-          source = 'theta_snapshot'
-        } else if (useTheta) {
-          const fallback = await qverisHeavyExecute(tools.options, { symbol: ticker, market: 'US' }, 24000)
-          normalized = normalizeOptions(ticker, await parseToolContent(fallback), quoteSpot)
-          source = 'qveris_finance_fallback'
-        } else {
-          if (raw.status === 'rejected' || !raw.value) throw raw.reason ?? safeError('QVeris options fallback was not loaded.')
-          normalized = normalizeOptions(ticker, await parseToolContent(raw.value), quoteSpot)
-        }
-        if (useTheta && (!normalized?.contracts?.length)) {
-          const fallback = await qverisHeavyExecute(tools.options, { symbol: ticker, market: 'US' }, 24000)
-          normalized = normalizeOptions(ticker, await parseToolContent(fallback), quoteSpot)
-          source = 'qveris_finance_fallback'
-        }
-        const { contracts, effectiveSpot } = normalized
-        const status = contracts.length
-          ? effectiveSpot === null ? 'partial' : 'available'
-          : 'unavailable'
-        const spotGaps = effectiveSpot === null
-          ? ['QVERIS_DATA_GAP: underlying spot unavailable; options chain is not used for contract-level recommendations.']
-          : []
-        if (liveQuoteResult.status === 'rejected') spotGaps.push(`QVERIS_DATA_GAP: delayed stock quote unavailable (${liveQuoteResult.reason?.message ?? 'unknown error'}).`)
-        const hasOpenInterest = contracts.some((contract) => typeof contract.openInterest === 'number')
-        if (source === 'theta_snapshot' && thetaOpenInterest.status === 'rejected') {
-          spotGaps.push(`QVERIS_DATA_GAP: open interest unavailable (${thetaOpenInterest.reason?.message ?? 'unknown error'}).`)
-        } else if (source === 'theta_snapshot' && !hasOpenInterest) {
-          spotGaps.push('QVERIS_DATA_GAP: open interest unavailable in the current Theta snapshot; OI is an OPRA daily field, not an intraday stream.')
-        }
+        if (!quoteSpot) throw safeError('FIU underlying quote is unavailable.')
+        if (expirationResult.status === 'rejected') throw expirationResult.reason
+        const today = new Date().toISOString().slice(0, 10)
+        const expirations = selectUsefulExpirations(normalizeFiuExpirations(expirationResult.value), today)
+        const chains = await Promise.all(expirations.map(async (expiration) => normalizeFiuOptionChain(
+          ticker,
+          expiration,
+          await qverisExecute(tools.optionChain, { requestBody: { root: ticker, type: 0, expiration } }, 200000),
+        )))
+        const rawContracts = chains.flatMap((chain) => chain.contracts)
+        const contracts = pruneFiuOptionContracts(rawContracts, quoteSpot)
+        const issues = chains.reduce((sum, chain) => ({
+          invalidMarkets: sum.invalidMarkets + chain.issues.invalidMarkets,
+          invalidGamma: sum.invalidGamma + chain.issues.invalidGamma,
+          invalidDelta: sum.invalidDelta + chain.issues.invalidDelta,
+          invalidValues: sum.invalidValues + chain.issues.invalidValues,
+        }), { invalidMarkets: 0, invalidGamma: 0, invalidDelta: 0, invalidValues: 0 })
+        const status = contracts.length ? 'available' : 'unavailable'
+        const spotGaps = []
+        if (!liveQuote) spotGaps.push(`QVERIS_DATA_GAP: realtime stock quote unavailable (${liveQuoteResult.reason?.message ?? 'empty response'}).`)
+        if (issues.invalidMarkets) spotGaps.push(`QVERIS_DATA_QUALITY: ${issues.invalidMarkets} crossed markets were excluded.`)
+        if (issues.invalidGamma) spotGaps.push(`QVERIS_DATA_QUALITY: ${issues.invalidGamma} negative Gamma values were excluded.`)
+        if (issues.invalidDelta) spotGaps.push(`QVERIS_DATA_QUALITY: ${issues.invalidDelta} invalid Delta values were excluded.`)
+        if (issues.invalidValues) spotGaps.push(`QVERIS_DATA_QUALITY: ${issues.invalidValues} negative OPRA quote, size, volume, open interest, or Vega values were isolated.`)
         return json(res, 200, cacheSet(optionsCache, 'options', cacheKey, {
           ticker,
           status,
           mode: 'live',
-          dataSource: source,
+          dataSource: 'fiu_opra',
           contracts,
           market: liveQuote ?? undefined,
           asOf: new Date().toISOString(),
-          openInterestCadence: source === 'theta_snapshot' ? 'OPRA reports option open interest around 06:30 ET for the previous trading day.' : undefined,
+          openInterestCadence: 'OPRA open interest is a daily field and may represent the previous trading day.',
           message: contracts.length
-            ? status === 'available'
-              ? `${source === 'theta_snapshot' ? 'Theta snapshot' : 'QVeris US options chain'} normalized.`
-              : 'QVeris US options chain loaded without a reliable spot reference.'
-            : 'QVeris returned no normalized US option contracts.',
+            ? 'FIU OPRA option chain normalized through QVeris.'
+            : 'FIU OPRA returned no normalized US option contracts.',
           dataGaps: [
             ...spotGaps,
-            ...(source === 'theta_snapshot' ? ['QVERIS_DATA_GAP: stock quote snapshot may be exchange-delayed; gamma is not included in this pass.'] : ['QVERIS_DATA_GAP: theta/gamma/vega may be absent when the routed provider does not return them.']),
-            'QVERIS_DATA_GAP: option reference master unavailable; US equity multiplier 100 remains an assumption.',
+            'QVERIS_DATA_GAP: OPRA quote timestamps and timezone are not exposed by the chain response.',
+            'QVERIS_DATA_GAP: US equity option multiplier 100 remains a product assumption.',
           ],
         }, marketOpen ? optionsRefreshMs : closedCacheMs))
       } catch (error) {
@@ -1376,31 +950,22 @@ async function handle(req, res) {
     if (url.pathname.startsWith('/api/events/')) {
       const ticker = tickerFromPath(url.pathname, '/api/events/')
       if (!ticker) throw safeError('Ticker is required.', 400)
-      requireSupportedTicker(ticker)
-      const today = new Date().toISOString().slice(0, 10)
-      const future = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-      const [earningsResult, filingsResult] = await Promise.allSettled([
-        qverisExecute(tools.earnings, { symbol: ticker, from: today, to: future }),
-        qverisExecute(tools.filings, { symbol: ticker, form: '8-K', from: today.slice(0, 4) + '-01-01', to: today }, 30000),
-      ])
-      const body = normalizeEvents(
+      return json(res, 200, {
         ticker,
-        earningsResult.status === 'fulfilled' ? earningsResult.value : {},
-        filingsResult.status === 'fulfilled' ? filingsResult.value : [],
-      )
-      body.dataGaps = [
-        ...(earningsResult.status === 'rejected' ? [`QVERIS_EVENTS_GAP: earnings unavailable (${earningsResult.reason?.message ?? 'unknown error'}).`] : []),
-        ...(filingsResult.status === 'rejected' ? [`QVERIS_EVENTS_GAP: filings unavailable (${filingsResult.reason?.message ?? 'unknown error'}).`] : []),
-      ]
-      return json(res, 200, body)
+        earnings: [],
+        filings: [],
+        dataGaps: ['QVERIS_EVENTS_GAP: FIU does not currently expose a verified US earnings calendar or SEC filings endpoint.'],
+      })
     }
 
     if (url.pathname.startsWith('/api/volatility/')) {
       const ticker = tickerFromPath(url.pathname, '/api/volatility/')
       if (!ticker) throw safeError('Ticker is required.', 400)
-      requireSupportedTicker(ticker)
-      const result = await qverisHeavyExecute(tools.volatility, { symbol: ticker }, 16000)
-      return json(res, 200, normalizeVolatility(ticker, result))
+      const options = await assistantApiJson(`/api/options/${encodeURIComponent(ticker)}`)
+      if (options.status !== 'available' || !options.market?.price) {
+        return json(res, 200, { ticker, spot: null, asOf: options.asOf, tenors: [], moneyness: [], iv: [], dataGaps: options.dataGaps ?? [] })
+      }
+      return json(res, 200, volatilityFromContracts(ticker, options.market.price, options.contracts, options.asOf))
     }
 
     if (url.pathname !== '/api' && !url.pathname.startsWith('/api/') && tryStatic(req, res, url)) return
@@ -1411,13 +976,28 @@ async function handle(req, res) {
   }
 }
 
-if (process.argv.includes('--smoke')) {
+if (process.argv.includes('--quote-refresh-self-check')) {
+  const parameters = stockQuoteParameters(['MU', 'AAPL'])
+  if (JSON.stringify(parameters) !== JSON.stringify({ fields: ['snapshot'], symbols: ['MU.US', 'AAPL.US'], timeMode: 0 })) {
+    throw new Error('FIU quote parameters self-check failed.')
+  }
+  const now = Date.now()
+  activeQuoteTickers.set('STALE', now - activeQuoteWindowMs - 1)
+  for (let index = 0; index < quoteBatchSize - 1; index += 1) activeQuoteTickers.set(`ACTIVE${index}`, now + index)
+  const symbols = activeQuoteSymbols(now)
+  const expectedCount = Math.min(quoteBatchSize, quoteBatchSize - 1 + (prewarmEnabled ? prewarmSymbols.length : 0))
+  if (symbols.length !== expectedCount || symbols.includes('STALE') || activeQuoteTickers.has('STALE') || (prewarmEnabled && prewarmSymbols[0] && !symbols.includes(prewarmSymbols[0]))) {
+    throw new Error('Quote refresh batch selection self-check failed.')
+  }
+  console.log('Quote refresh batch selection self-check passed.')
+} else if (process.argv.includes('--smoke')) {
   const ticker = process.argv.at(-1)?.startsWith('--') ? 'NVDA' : process.argv.at(-1) || 'NVDA'
-  const market = await qverisExecute(tools.ohlcv, { symbol: `${ticker.toUpperCase()}.US`, fmt: 'json' })
-  console.log(JSON.stringify({ ok: true, ticker: ticker.toUpperCase(), fields: Object.keys(market).sort() }, null, 2))
+  const market = await qverisExecute(tools.liveQuote, stockQuoteParameters([ticker.toUpperCase()]))
+  console.log(JSON.stringify({ ok: true, ticker: ticker.toUpperCase(), price: normalizeFiuQuote(ticker.toUpperCase(), market).price }, null, 2))
 } else {
   createServer(handle).listen(port, host, () => {
     const origin = `http://${host}:${port}`
+    startQuoteRefresh()
     startPrewarm(origin)
     console.log(`QVeris API listening on ${origin}`)
   })

@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent } from 'react'
 import { GraduationCap, Briefcase, CandlestickChart, Moon, Search, Sparkles, Sun } from 'lucide-react'
 import { getPaperAccount } from '../core/paperTradeApi'
-import { isSupportedUnderlying } from '../core/supportedUnderlyings'
 import { useT } from '../i18n'
 
 function navigate(path: string) { window.location.hash = path }
@@ -101,10 +100,6 @@ export function HomePage({ theme, onToggleTheme }: { theme: 'light' | 'dark'; on
   function go(value: string) {
     const v = value.trim().toUpperCase()
     if (!v) return
-    if (!isSupportedUnderlying(v)) {
-      setError(h.unsupported(v))
-      return
-    }
     setError('')
     navigate(`#/trade?ticker=${encodeURIComponent(v)}`)
   }

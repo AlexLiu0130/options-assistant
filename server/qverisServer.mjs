@@ -84,7 +84,7 @@ const authRuntime = createAuthRuntime({
   scopes: process.env.QVERIS_OAUTH_SCOPES || 'openid profile email',
   secureCookie: process.env.QVERIS_OAUTH_SECURE_COOKIE === 'true',
 })
-const localAuthBypass = process.env.OPTIONS_ASSISTANT_LOCAL_AUTH_BYPASS !== 'false'
+const localAuthBypass = process.env.OPTIONS_ASSISTANT_LOCAL_AUTH_BYPASS === 'true'
 const localAuthUser = {
   sub: 'local-dev-user',
   email: 'local-dev@qveris.test',
@@ -796,7 +796,7 @@ async function handle(req, res) {
       const ticker = tickerFromPath(url.pathname, '/api/options/')
       if (!ticker) throw safeError('Ticker is required.', 400)
       const marketOpen = isUsRegularMarketOpen()
-      const cacheKey = `fiu-opra-v3:${ticker}:${marketOpen ? 'open' : 'closed'}`
+      const cacheKey = `fiu-opra-v4:${ticker}:${marketOpen ? 'open' : 'closed'}`
       const cachedBody = cached(optionsCache, 'options', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)
       try {
@@ -813,7 +813,7 @@ async function handle(req, res) {
         const chains = await Promise.all(expirations.map(async (expiration) => normalizeFiuOptionChain(
           ticker,
           expiration,
-          await qverisExecute(tools.optionChain, { requestBody: { root: ticker, type: 0, expiration } }, 200000),
+          await qverisExecute(tools.optionChain, { requestBody: { root: ticker, type: 0, expiration } }, 1000000),
         )))
         const rawContracts = chains.flatMap((chain) => chain.contracts)
         const contracts = pruneFiuOptionContracts(rawContracts, quoteSpot)

@@ -34,6 +34,7 @@ services:
       QVERIS_OAUTH_RESOURCE: ${QVERIS_OAUTH_RESOURCE:-https://qveris.ai/account}
       QVERIS_OAUTH_SCOPES: ${QVERIS_OAUTH_SCOPES:-openid profile email}
       QVERIS_OAUTH_SECURE_COOKIE: ${QVERIS_OAUTH_SECURE_COOKIE:-true}
+      OPTIONS_ASSISTANT_LOCAL_AUTH_BYPASS: ${OPTIONS_ASSISTANT_LOCAL_AUTH_BYPASS:-false}
     expose:
       - "8787"
     volumes:

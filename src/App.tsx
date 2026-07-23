@@ -26,7 +26,6 @@ import { selectDefaultExpiration } from './core/expirationEngine'
 import { parseUserView } from './core/parseUserView'
 import { recordProductEvent } from './core/productEventsApi'
 import { recommendStrategyTypes } from './core/strategyRecommendationEngine'
-import { isSupportedUnderlying } from './core/supportedUnderlyings'
 import { useT } from './i18n'
 import type { QverisMarketSnapshot, QverisOptionsResponse } from './types/optionTypes'
 import type { Direction, ExperienceLevel, StrategyCandidate, Strength } from './types/strategyTypes'
@@ -82,9 +81,9 @@ const lastTickerKey = 'qveris-last-ticker'
 const fetchCache = new Map<string, { expires: number; data: unknown }>()
 const fetchInflight = new Map<string, Promise<unknown>>()
 const fetchCacheMs = 60000
-const quotePollMs = 5000
-const marketPollMs = 60000
-const optionsPollMs = 60000
+const quotePollMs = 2000
+const marketPollMs = 15000
+const optionsPollMs = 10000
 
 const initialForm: FormState = {
   ticker: '',
@@ -290,7 +289,6 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
   const [dataPulse, setDataPulse] = useState(0)
   const [strategyOverrides, setStrategyOverrides] = useState<Record<string, StrategyCandidate>>({})
   const ticker = submitted.ticker.trim().toUpperCase()
-  const unsupportedTicker = Boolean(ticker && !isSupportedUnderlying(ticker))
   const [market, setMarket] = useState<LoadState<QverisMarketSnapshot>>({})
   const [options, setOptions] = useState<LoadState<QverisOptionsResponse>>({})
   const recordedDataFailures = useRef(new Set<string>())
@@ -298,8 +296,8 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
 
   useEffect(() => {
     recordedDataFailures.current.clear()
-    if (ticker && !unsupportedTicker) saveLastTicker(ticker)
-  }, [ticker, unsupportedTicker])
+    if (ticker) saveLastTicker(ticker)
+  }, [ticker])
 
   const recordDataFailure = useCallback((errorCategory: 'QVERIS_MARKET_ERROR' | 'QVERIS_OPTIONS_ERROR') => {
     const key = `${ticker}:${errorCategory}`
@@ -309,7 +307,7 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
   }, [ticker])
 
   useEffect(() => {
-    if (!ticker || unsupportedTicker) { setMarket({}); return }
+    if (!ticker) { setMarket({}); return }
     let cancelled = false
     const load = () => fetchJson<QverisMarketSnapshot>(`/api/market/${ticker}?range=${priceRange}`, { force: true })
       .then((data) => { if (!cancelled) { setMarket({ data }); setDataPulse((n) => n + 1) } })
@@ -318,10 +316,10 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
     void load()
     const timer = window.setInterval(() => void load(), marketPollMs)
     return () => { cancelled = true; window.clearInterval(timer) }
-  }, [priceRange, ticker, unsupportedTicker, recordDataFailure])
+  }, [priceRange, ticker, recordDataFailure])
 
   useEffect(() => {
-    if (!ticker || unsupportedTicker) return
+    if (!ticker) return
     let cancelled = false
     const load = () => fetchJson<QverisMarketSnapshot>(`/api/quote/${ticker}`, { force: true })
       .then((quote) => {
@@ -333,10 +331,10 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
     void load()
     const timer = window.setInterval(() => void load(), quotePollMs)
     return () => { cancelled = true; window.clearInterval(timer) }
-  }, [ticker, unsupportedTicker])
+  }, [ticker])
 
   useEffect(() => {
-    if (!ticker || unsupportedTicker) { setOptions({}); return }
+    if (!ticker) { setOptions({}); return }
     let cancelled = false
     const load = () => fetchJson<QverisOptionsResponse>(`/api/options/${ticker}`, { force: true })
       .then((data) => { if (!cancelled) { setOptions({ data }); setDataPulse((n) => n + 1) } })
@@ -345,7 +343,7 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
     void load()
     const timer = window.setInterval(() => void load(), optionsPollMs)
     return () => { cancelled = true; window.clearInterval(timer) }
-  }, [ticker, unsupportedTicker, recordDataFailure])
+  }, [ticker, recordDataFailure])
 
   useEffect(() => {
     setStrategyOverrides({})
@@ -465,13 +463,11 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
     const next = { ...form, ticker: form.ticker.trim().toUpperCase() }
     if (next.ticker) {
       navigate(lastTradePath(next.ticker))
-      if (isSupportedUnderlying(next.ticker)) {
-        recordProductEvent({
-          eventName: 'ticker_searched',
-          ticker: next.ticker,
-          properties: { source: 'topbar', page: 'trade' },
-        })
-      }
+      recordProductEvent({
+        eventName: 'ticker_searched',
+        ticker: next.ticker,
+        properties: { source: 'topbar', page: 'trade' },
+      })
     }
     setSubmitted(profileApplied ? next : unappliedProfile(next))
   }
@@ -549,11 +545,11 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
         <button type="button" title={t.nav.paper} onClick={() => navigate('#/paper')}><Briefcase size={20} /></button>
       </aside>
 
-      {!ticker || unsupportedTicker ? (
+      {!ticker ? (
         <section className="oa-trade-empty">
           <Search size={32} />
-          <h2>{unsupportedTicker ? t.tradeEmpty.unsupportedTitle : t.tradeEmpty.title}</h2>
-          <p>{unsupportedTicker ? t.tradeEmpty.unsupportedSubtitle(ticker) : t.tradeEmpty.subtitle}</p>
+          <h2>{t.tradeEmpty.title}</h2>
+          <p>{t.tradeEmpty.subtitle}</p>
         </section>
       ) : (
       <>

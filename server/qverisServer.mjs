@@ -63,13 +63,9 @@ const host = process.env.API_HOST || '127.0.0.1'
 const corsOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:5173'
 const serveStatic = process.env.SERVE_STATIC !== 'false'
 const quoteRefreshMs = Number(process.env.QVERIS_QUOTE_REFRESH_MS || 5000)
-const quoteBatchSize = 20
-const activeQuoteWindowMs = 30_000
 const marketRefreshMs = Number(process.env.QVERIS_MARKET_REFRESH_MS || 15000)
-const optionsRefreshMs = Number(process.env.QVERIS_OPTIONS_REFRESH_MS || 30000)
+const optionsRefreshMs = Number(process.env.QVERIS_OPTIONS_REFRESH_MS || 10000)
 const closedCacheMs = Number(process.env.QVERIS_CLOSED_CACHE_MS || 6 * 60 * 60 * 1000)
-const prewarmEnabled = process.env.QVERIS_PREWARM_ENABLED !== 'false'
-const prewarmIntervalMs = Number(process.env.QVERIS_PREWARM_INTERVAL_MS || 15000)
 const upstreamTimeoutMs = Math.max(1000, Number(process.env.QVERIS_UPSTREAM_TIMEOUT_MS || 20000))
 const maxJsonBodyBytes = 1_000_000
 const authBaseUrl = String(process.env.QVERIS_AUTH_BASE_URL || 'https://qveris.ai').replace(/\/$/, '')
@@ -95,21 +91,12 @@ const localAuthUser = {
   email: 'local-dev@qveris.test',
   name: 'Local Dev',
 }
-const prewarmSymbols = String(process.env.QVERIS_PREWARM_SYMBOLS || 'SPY,QQQ,NVDA,TSLA,AAPL,MSFT,AMZN,META,AMD,MU')
-  .split(',')
-  .map((symbol) => tickerFromPath(symbol, ''))
-  .filter(Boolean)
 const marketCache = new Map()
 const quoteCache = new Map()
 const optionsCache = new Map()
 const qverisInflight = new Map()
-const prewarmInflight = new Set()
-const activeQuoteTickers = new Map()
 const cacheDir = new URL('../.cache/qveris/', import.meta.url)
 const staticRoot = fileURLToPath(new URL('../dist/', import.meta.url))
-let prewarmCursor = 0
-let quoteBatchInflight
-let quoteBatchScheduled
 
 // QVeris tool IDs. These are executed only through the QVeris gateway, never by direct vendor API calls.
 const tools = {
@@ -297,72 +284,6 @@ function cacheSet(cache, bucket, key, body, ttlMs) {
 
 function cacheFile(bucket, key) {
   return new URL(`${bucket}-${encodeURIComponent(key)}.json`, cacheDir)
-}
-
-function activeQuoteSymbols(now = Date.now()) {
-  const cutoff = now - activeQuoteWindowMs
-  const active = []
-  for (const [ticker, activeAt] of activeQuoteTickers) {
-    if (activeAt < cutoff) activeQuoteTickers.delete(ticker)
-    else active.push([ticker, activeAt])
-  }
-  active.sort(([, a], [, b]) => b - a)
-  const symbols = new Set(active.slice(0, quoteBatchSize).map(([ticker]) => ticker))
-  for (const ticker of prewarmEnabled ? prewarmSymbols : []) {
-    if (symbols.size >= quoteBatchSize) break
-    symbols.add(ticker)
-  }
-  return [...symbols]
-}
-
-function refreshActiveQuotes() {
-  const tickers = activeQuoteSymbols()
-  if (!isUsRegularMarketOpen() || !tickers.length || quoteBatchInflight) return quoteBatchInflight
-  const run = qverisExecute(tools.liveQuote, stockQuoteParameters(tickers))
-    .then((result) => {
-      for (const ticker of tickers) {
-        const quote = validLiveQuote(ticker, result)
-        if (quote) cacheSet(quoteCache, 'quote', `fiu-quote-v1:${ticker}`, quote, quoteRefreshMs)
-      }
-    })
-    .catch(() => {})
-    .finally(() => { quoteBatchInflight = undefined })
-  quoteBatchInflight = run
-  return run
-}
-
-function scheduleQuoteRefresh() {
-  if (!isUsRegularMarketOpen()) return undefined
-  if (quoteBatchInflight) return quoteBatchInflight
-  if (!quoteBatchScheduled) {
-    quoteBatchScheduled = new Promise((resolve) => setTimeout(resolve, 25))
-      .then(refreshActiveQuotes)
-      .finally(() => { quoteBatchScheduled = undefined })
-  }
-  return quoteBatchScheduled
-}
-
-function startQuoteRefresh() {
-  refreshActiveQuotes()
-  const timer = setInterval(refreshActiveQuotes, quoteRefreshMs)
-  timer.unref?.()
-}
-
-function startPrewarm(origin) {
-  if (!prewarmEnabled || !prewarmSymbols.length) return
-  const timer = setInterval(() => {
-    if (!isUsRegularMarketOpen()) return
-    const symbol = prewarmSymbols[prewarmCursor++ % prewarmSymbols.length]
-    if (prewarmInflight.has(symbol) || cached(optionsCache, 'options', `fiu-opra-v3:${symbol}:open`)) return
-    prewarmInflight.add(symbol)
-    fetch(`${origin}/api/options/${symbol}?live=1`, {
-      headers: { 'x-options-internal-token': authRuntime.internalToken },
-      signal: AbortSignal.timeout(upstreamTimeoutMs),
-    })
-      .catch(() => {})
-      .finally(() => prewarmInflight.delete(symbol))
-  }, prewarmIntervalMs)
-  timer.unref?.()
 }
 
 async function assistantApiJson(pathname) {
@@ -832,17 +753,9 @@ async function handle(req, res) {
     if (url.pathname.startsWith('/api/quote/')) {
       const ticker = tickerFromPath(url.pathname, '/api/quote/')
       if (!ticker) throw safeError('Ticker is required.', 400)
-      activeQuoteTickers.set(ticker, Date.now())
       const cacheKey = `fiu-quote-v1:${ticker}`
       const cachedBody = cached(quoteCache, 'quote', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)
-      if (quoteBatchInflight) await quoteBatchInflight
-      let refreshedBody = cached(quoteCache, 'quote', cacheKey)
-      if (!refreshedBody) {
-        await scheduleQuoteRefresh()
-        refreshedBody = cached(quoteCache, 'quote', cacheKey)
-      }
-      if (refreshedBody) return json(res, 200, refreshedBody)
       const quote = validLiveQuote(ticker, await qverisExecute(tools.liveQuote, stockQuoteParameters([ticker])))
       if (!quote) throw safeError('FIU realtime quote is unavailable.')
       return json(res, 200, cacheSet(quoteCache, 'quote', cacheKey, quote, quoteRefreshMs))
@@ -991,15 +904,7 @@ if (process.argv.includes('--quote-refresh-self-check')) {
   if (JSON.stringify(parameters) !== JSON.stringify({ fields: ['snapshot'], symbols: ['MU.US', 'AAPL.US'], timeMode: 0 })) {
     throw new Error('FIU quote parameters self-check failed.')
   }
-  const now = Date.now()
-  activeQuoteTickers.set('STALE', now - activeQuoteWindowMs - 1)
-  for (let index = 0; index < quoteBatchSize - 1; index += 1) activeQuoteTickers.set(`ACTIVE${index}`, now + index)
-  const symbols = activeQuoteSymbols(now)
-  const expectedCount = Math.min(quoteBatchSize, quoteBatchSize - 1 + (prewarmEnabled ? prewarmSymbols.length : 0))
-  if (symbols.length !== expectedCount || symbols.includes('STALE') || activeQuoteTickers.has('STALE') || (prewarmEnabled && prewarmSymbols[0] && !symbols.includes(prewarmSymbols[0]))) {
-    throw new Error('Quote refresh batch selection self-check failed.')
-  }
-  console.log('Quote refresh batch selection self-check passed.')
+  console.log('FIU quote parameters self-check passed.')
 } else if (process.argv.includes('--smoke')) {
   const ticker = process.argv.at(-1)?.startsWith('--') ? 'NVDA' : process.argv.at(-1) || 'NVDA'
   const market = await qverisExecute(tools.liveQuote, stockQuoteParameters([ticker.toUpperCase()]))
@@ -1007,8 +912,6 @@ if (process.argv.includes('--quote-refresh-self-check')) {
 } else {
   createServer(handle).listen(port, host, () => {
     const origin = `http://${host}:${port}`
-    startQuoteRefresh()
-    startPrewarm(origin)
     console.log(`QVeris API listening on ${origin}`)
   })
 }

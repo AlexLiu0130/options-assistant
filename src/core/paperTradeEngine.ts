@@ -162,6 +162,20 @@ export function isUsOptionsRegularTradingHours(now = Date.now()) {
   return minutes >= 9 * 60 + 30 && minutes < closeMinutes
 }
 
+export function fiuQuoteSessionId(now = Date.now()) {
+  const parts = easternParts(now)
+  if (parts.weekday === 'Sat' || parts.weekday === 'Sun') return -2
+  const year = Number(parts.year)
+  const month = Number(parts.month)
+  const day = Number(parts.day)
+  const key = dateKey(year, month, day)
+  if (nyseHolidayKeys(year).has(key)) return -2
+  const minutes = Number(parts.hour) * 60 + Number(parts.minute)
+  const closeMinutes = nyseEarlyCloseKeys(year).has(key) ? 13 * 60 : 16 * 60
+  if (minutes >= 4 * 60 && minutes < 9 * 60 + 30) return -1
+  return minutes >= 9 * 60 + 30 && minutes < closeMinutes ? 1 : -2
+}
+
 function daysUntil(expiration: string, now = Date.now()) {
   const end = new Date(`${expiration}T21:00:00Z`).getTime()
   if (!Number.isFinite(end)) return 0

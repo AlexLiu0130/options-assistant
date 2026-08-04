@@ -42,7 +42,7 @@ import {
 } from './fiuData.mjs'
 import { createAuthRuntime } from './auth.mjs'
 import { parseUserView } from '../src/core/parseUserView.ts'
-import { isUsOptionsRegularTradingHours as isUsRegularMarketOpen } from '../src/core/paperTradeEngine.ts'
+import { fiuQuoteSessionId, isUsOptionsRegularTradingHours as isUsRegularMarketOpen } from '../src/core/paperTradeEngine.ts'
 import { recommendStrategyTypes } from '../src/core/strategyRecommendationEngine.ts'
 
 const envPath = new URL('../.env.local', import.meta.url)
@@ -174,8 +174,8 @@ function tickerFromPath(pathname, prefix) {
   return decodeURIComponent(pathname.slice(prefix.length)).trim().toUpperCase().replace(/[^A-Z0-9.-]/g, '')
 }
 
-function stockQuoteParameters(tickers) {
-  return { fields: ['snapshot'], symbols: tickers.map((ticker) => `${ticker}.US`), timeMode: 0 }
+function stockQuoteParameters(tickers, now = Date.now()) {
+  return { fields: ['snapshot'], symbols: tickers.map((ticker) => `${ticker}.US`), timeMode: 0, sessionId: fiuQuoteSessionId(now) }
 }
 
 function requireKey() {
@@ -890,9 +890,17 @@ async function handle(req, res) {
 }
 
 if (process.argv.includes('--quote-refresh-self-check')) {
-  const parameters = stockQuoteParameters(['MU', 'AAPL'])
-  if (JSON.stringify(parameters) !== JSON.stringify({ fields: ['snapshot'], symbols: ['MU.US', 'AAPL.US'], timeMode: 0 })) {
-    throw new Error('FIU quote parameters self-check failed.')
+  const checks = [
+    [Date.UTC(2026, 6, 6, 12), -1], // 08:00 ET premarket
+    [Date.UTC(2026, 6, 6, 14), 1], // 10:00 ET regular session
+    [Date.UTC(2026, 6, 6, 21), -2], // 17:00 ET postmarket
+    [Date.UTC(2026, 6, 4, 16), -2], // Saturday: last postmarket snapshot
+  ]
+  for (const [now, expectedSessionId] of checks) {
+    const parameters = stockQuoteParameters(['MU', 'AAPL'], now)
+    if (JSON.stringify(parameters) !== JSON.stringify({ fields: ['snapshot'], symbols: ['MU.US', 'AAPL.US'], timeMode: 0, sessionId: expectedSessionId })) {
+      throw new Error('FIU quote parameters self-check failed.')
+    }
   }
   console.log('FIU quote parameters self-check passed.')
 } else if (process.argv.includes('--smoke')) {

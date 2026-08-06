@@ -352,6 +352,9 @@ async function deepseekChat(messages, systemExtra = '') {
       headers: {
         authorization: `Bearer ${requireDeepSeekKey()}`,
         'content-type': 'application/json',
+        // 模型网关按 X-Qveris-Source 聚合各产品调用；DEEPSEEK_BASE_URL 指向
+        // aigateway.qveris.ai/v1 时该来源会记录到网关统计。
+        'x-qveris-source': 'options-assistant',
       },
       body: JSON.stringify({
         model: deepseekModel,

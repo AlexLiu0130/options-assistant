@@ -1719,6 +1719,65 @@
   background: var(--accent);
   color: #fff;
 }
+.assistant-answer {
+  max-width: 94%;
+  margin: 0 0 10px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+.assistant-messages .assistant-answer p {
+  width: auto;
+  max-width: none;
+  margin: 0 0 8px;
+  padding: 0;
+  background: none;
+  border-radius: 0;
+}
+.assistant-messages .assistant-answer p:last-child {
+  margin-bottom: 0;
+}
+.assistant-card {
+  margin: 0 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--surface);
+}
+.assistant-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+.assistant-card-head button {
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+}
+.assistant-card-head button.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.assistant-messages .assistant-card p {
+  font-size: 12px;
+  color: var(--muted, var(--text));
+}
+.assistant-messages .assistant-answer p.assistant-follow-up {
+  font-weight: 600;
+}
+.assistant-messages .assistant-answer p.assistant-warning {
+  font-size: 12px;
+  color: var(--warning, #b45309);
+}
 .assistant-input {
   display: flex;
   gap: 8px;
@@ -3959,7 +4018,8 @@
 :root[data-theme='dark'] .chain-matrix tbody tr:hover td,
 :root[data-theme='dark'] .pp-table tbody tr:hover,
 :root[data-theme='dark'] .edu-list-item:hover,
-:root[data-theme='dark'] .assistant-messages p.assistant {
+:root[data-theme='dark'] .assistant-messages p.assistant,
+:root[data-theme='dark'] .assistant-answer {
   background: #2c3b4e;
 }
 :root[data-theme='dark'] .chain-matrix .strike-head,

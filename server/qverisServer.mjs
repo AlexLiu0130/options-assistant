@@ -3,22 +3,39 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'no
 import { extname, join, normalize, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  agentFallbackResponse,
+  adviceBoundaryAnswer,
   buildAssistantPlan,
-  classifyAssistantIntent,
-  enforceAgentResponse,
+  canonicalHorizon,
+  deterministicAnswer,
   guardAssistantText,
+  horizonDays,
+  horizonZh,
+  isAdviceRequest,
+  nextAgentState,
+  normalizeAgentState,
+  parseAssistantTurn,
+  profileQuestion,
+  resolveContractAdjustment,
+  resolveIntent,
+  sanitizeModelPatch,
+  scopeStateToTicker,
+  shiftHorizon,
+  strategyReference,
+  targetSanity,
+  withoutTickerScoped,
+  replyLanguage,
 } from './assistantAgent.mjs'
+import { assistantToolSpecs, createAssistantTools, volatilitySummary } from './assistantTools.mjs'
+import { adjustStrategyLegs } from '../src/core/strategyAdjustmentEngine.ts'
 import {
   buildExplanationPrompt,
   buildExtractionPrompt,
   isPromptInjection,
   mergeAgentProfile,
-  nextRequiredProfileField,
+  normalizeAgentProfile,
   normalizeExtraction,
   parsedViewInput,
   profileFromMarketContext,
-  profileQuestion,
   profileUpdatesForClient,
   unknownFinancialNumbers,
 } from './assistantHarness.mjs'
@@ -33,16 +50,19 @@ import {
 import { recordProductEvent } from './productEventsRuntime.mjs'
 import { getAdminAnalytics } from './adminAnalyticsRuntime.mjs'
 import {
-  normalizeFiuCandles,
-  normalizeFiuExpirations,
-  normalizeFiuOptionChain,
-  normalizeFiuQuote,
-  pruneFiuOptionContracts,
+  aggregateCandles,
+  impliedSpotFromChain,
+  normalizeAlphaVantageCandles,
+  normalizeAlphaVantageOptionChain,
+  normalizeAlphaVantageQuote,
+  optionExpirations,
+  pruneOptionContracts,
   volatilityFromContracts,
-} from './fiuData.mjs'
+} from './alphaVantageData.mjs'
 import { createAuthRuntime } from './auth.mjs'
+import { selectDefaultExpiration } from '../src/core/expirationEngine.ts'
 import { parseUserView } from '../src/core/parseUserView.ts'
-import { fiuQuoteSessionId, isUsOptionsRegularTradingHours as isUsRegularMarketOpen } from '../src/core/paperTradeEngine.ts'
+import { isUsOptionsRegularTradingHours as isUsRegularMarketOpen } from '../src/core/paperTradeEngine.ts'
 import { recommendStrategyTypes } from '../src/core/strategyRecommendationEngine.ts'
 
 const envPath = new URL('../.env.local', import.meta.url)
@@ -63,7 +83,7 @@ const corsOrigin = process.env.CORS_ORIGIN ?? 'http://localhost:5173'
 const serveStatic = process.env.SERVE_STATIC !== 'false'
 const quoteRefreshMs = Number(process.env.QVERIS_QUOTE_REFRESH_MS || 5000)
 const marketRefreshMs = Number(process.env.QVERIS_MARKET_REFRESH_MS || 15000)
-const optionsRefreshMs = Number(process.env.QVERIS_OPTIONS_REFRESH_MS || 10000)
+const optionsRefreshMs = Number(process.env.QVERIS_OPTIONS_REFRESH_MS || 60000)
 const closedCacheMs = Number(process.env.QVERIS_CLOSED_CACHE_MS || 6 * 60 * 60 * 1000)
 const upstreamTimeoutMs = Math.max(1000, Number(process.env.QVERIS_UPSTREAM_TIMEOUT_MS || 20000))
 const maxJsonBodyBytes = 1_000_000
@@ -99,10 +119,11 @@ const staticRoot = fileURLToPath(new URL('../dist/', import.meta.url))
 
 // QVeris tool IDs. These are executed only through the QVeris gateway, never by direct vendor API calls.
 const tools = {
-  liveQuote: 'fiu_mcp_server.postv1stockquote.create.v2.1790f84e',
-  candles: 'fiu_mcp_server.postv1chartklinelist.create.v2.41a84fef',
-  optionExpirations: 'fiu_mcp_server.postoprav1chainexpiration.create.v2.708b0fcc',
-  optionChain: 'fiu_mcp_server.postoprav1chainquery.create.v2.d591d0f8',
+  liveQuote: 'alphavantage.global_quote.retrieve.v1.9b8a7c6d',
+  intradayCandles: 'alphavantage.time_series_intraday.retrieve.v1.1e18340d',
+  dailyCandles: 'alphavantage.time-series.daily.v1',
+  weeklyCandles: 'alphavantage.time_series_weekly.retrieve.v1.9b8a7c6d',
+  optionChain: 'alphavantage.realtime_options.retrieve.v1.7aca3c4a',
 }
 
 function json(res, status, body) {
@@ -174,8 +195,28 @@ function tickerFromPath(pathname, prefix) {
   return decodeURIComponent(pathname.slice(prefix.length)).trim().toUpperCase().replace(/[^A-Z0-9.-]/g, '')
 }
 
-function stockQuoteParameters(tickers, now = Date.now()) {
-  return { fields: ['snapshot'], symbols: tickers.map((ticker) => `${ticker}.US`), timeMode: 0, sessionId: fiuQuoteSessionId(now) }
+function stockQuoteParameters(ticker) {
+  return { function: 'GLOBAL_QUOTE', symbol: ticker, entitlement: 'realtime' }
+}
+
+function candleParameters(ticker, rangeParams) {
+  if (rangeParams.kind === 'intraday') {
+    return {
+      function: 'TIME_SERIES_INTRADAY',
+      symbol: ticker,
+      interval: rangeParams.interval,
+      outputsize: 'full',
+      extended_hours: 'false',
+      entitlement: 'realtime',
+    }
+  }
+  if (rangeParams.kind === 'weekly') return { function: 'TIME_SERIES_WEEKLY', symbol: ticker }
+  return { function: 'TIME_SERIES_DAILY', symbol: ticker, outputsize: rangeParams.pageSize > 100 ? 'full' : 'compact' }
+}
+
+function candleTool(rangeParams) {
+  if (rangeParams.kind === 'intraday') return tools.intradayCandles
+  return rangeParams.kind === 'weekly' ? tools.weeklyCandles : tools.dailyCandles
 }
 
 function requireKey() {
@@ -241,11 +282,29 @@ async function qverisExecuteNow(toolId, parameters, maxResponseSize = 20000) {
   if (!response.ok || payload.success === false) {
     throw safeError(`QVeris tool execution failed: ${toolId}`, payload?.result?.status_code || response.status || 502)
   }
-  const result = payload.result?.data ?? payload.result
+  const result = payload.result?.full_content_file_url
+    ? await qverisFullContent(payload.result.full_content_file_url)
+    : payload.result?.data ?? payload.result
   if (result && typeof result === 'object' && 'code' in result && Number(result.code) !== 200) {
     throw safeError(`QVeris provider rejected the request: ${result.msg || result.message || toolId}`, 502)
   }
+  // Alpha Vantage reports quota and parameter problems as HTTP 200 bodies with only a notice field.
+  const notice = result && typeof result === 'object' && !Array.isArray(result)
+    ? result['Error Message'] || result.Note || (Object.keys(result).length <= 2 ? result.Information : undefined)
+    : undefined
+  if (notice) throw safeError(`QVeris provider rejected the request: ${String(notice).slice(0, 160)}`, 502)
   return result
+}
+
+// Oversized tool results are parked in QVeris storage; the signed URL is fetched here and never forwarded.
+async function qverisFullContent(url) {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(Math.max(upstreamTimeoutMs, 30_000)) })
+    if (!response.ok) throw new Error(String(response.status))
+    return await response.json()
+  } catch {
+    throw safeError('QVeris full tool result could not be downloaded.', 502)
+  }
 }
 
 async function qverisExecute(toolId, parameters, maxResponseSize = 20000) {
@@ -295,7 +354,33 @@ async function assistantApiJson(pathname) {
   return body
 }
 
-async function canonicalAssistantContext(profile, selectedStrategyId) {
+// Chat-made contract edits are absolute leg values; the engine re-prices them on every turn's fresh chain.
+function applyContractOverrides(strategies, overrides, options, parsedView) {
+  const applied = {}
+  const result = strategies.map((strategy) => {
+    const adjustments = overrides?.[strategy.id]
+    if (!adjustments?.length || !strategy.legs?.length) return strategy
+    const adjusted = adjustStrategyLegs({ baseStrategy: strategy, optionChain: options, view: parsedView, adjustments })
+    if (!adjusted.strategy) return strategy
+    applied[strategy.id] = adjustments
+    return adjusted.strategy
+  })
+  return { strategies: result, applied }
+}
+
+// A strategy the user edited on the page arrives with its legs; same structure as the engine's base means it is an edit.
+function pageOverride(clientStrategy, baseStrategies) {
+  const base = baseStrategies.find((strategy) => strategy.id === clientStrategy?.id)
+  const legs = Array.isArray(clientStrategy?.legs) ? clientStrategy.legs : []
+  if (!base?.legs?.length || legs.length !== base.legs.length) return undefined
+  if (legs.some((leg, index) => leg?.action !== base.legs[index].action || leg?.right !== base.legs[index].right)) return undefined
+  const adjustments = legs.map((leg, legIndex) => ({ legIndex, strike: Number(leg.strike), expiration: String(leg.expiration), quantity: Number(leg.quantity ?? 1) }))
+  const same = adjustments.every((item, index) => item.strike === base.legs[index].strike && item.expiration === base.legs[index].expiration && item.quantity === (base.legs[index].quantity ?? 1))
+  if (same) return null
+  return adjustments.every((item) => item.strike > 0 && /^\d{4}-\d{2}-\d{2}$/.test(item.expiration) && Number.isInteger(item.quantity) && item.quantity >= 1 && item.quantity <= 20) ? adjustments : undefined
+}
+
+async function canonicalAssistantContext(profile, selectedStrategyId, overrides = {}, clientStrategy) {
   const ticker = profile.ticker
   const [optionsResult, quoteResult] = await Promise.allSettled([
     assistantApiJson(`/api/options/${encodeURIComponent(ticker)}`),
@@ -311,11 +396,18 @@ async function canonicalAssistantContext(profile, selectedStrategyId) {
     ...(quoteResult.status === 'rejected' ? [`QVERIS_MARKET_GAP: stock quote unavailable (${quoteResult.reason?.message || 'unknown error'}).`] : []),
   ]
   if (!Number.isFinite(spot) || spot <= 0 || options.status !== 'available') {
+    let strategies = []
+    try {
+      strategies = recommendStrategyTypes(parseUserView(parsedViewInput(profile, Number.isFinite(spot) && spot > 0 ? spot : undefined)), undefined)
+        .slice(0, 4)
+    } catch (error) {
+      console.warn('[assistant] education candidates failed:', error?.message)
+    }
     return {
       ticker,
       market,
       options,
-      strategies: [],
+      strategies,
       selectedStrategy: undefined,
       parsedView: undefined,
       snapshotId: `${ticker}:${options.asOf || market?.asOf || 'unavailable'}`,
@@ -325,26 +417,33 @@ async function canonicalAssistantContext(profile, selectedStrategyId) {
     }
   }
   const parsedView = parseUserView(parsedViewInput(profile, spot))
-  const strategies = recommendStrategyTypes(parsedView, options, undefined, { rank: true })
+  // Same expiration choice as the trade page, so chat answers match the strategy panel.
+  const preferredExpiration = selectDefaultExpiration(optionExpirations(options.contracts ?? []), parsedView)
+  const baseStrategies = recommendStrategyTypes(parsedView, options, preferredExpiration, { rank: true })
+  const wanted = { ...overrides }
+  const fromPage = pageOverride(clientStrategy, baseStrategies)
+  if (fromPage) wanted[clientStrategy.id] = fromPage
+  else if (fromPage === null) delete wanted[clientStrategy.id]
+  const { strategies, applied } = applyContractOverrides(baseStrategies, wanted, options, parsedView)
+  // Keep the engine's ranking order; the selection only decides what "this one" refers to.
   const selectedStrategy = strategies.find((strategy) => strategy.id === selectedStrategyId)
-  const orderedStrategies = selectedStrategy
-    ? [selectedStrategy, ...strategies.filter((strategy) => strategy.id !== selectedStrategy.id)]
-    : strategies
   return {
     ticker,
     market,
     options,
-    strategies: orderedStrategies,
+    strategies,
+    baseStrategies,
+    appliedOverrides: applied,
     selectedStrategy,
     parsedView,
     snapshotId: `${ticker}:${options.asOf || market?.asOf}`,
     generatedAt: options.asOf || market?.asOf || new Date().toISOString(),
     dataGaps,
-    recommendable: orderedStrategies.some((strategy) => strategy.status === 'contract_ready' && strategy.legs.length > 0),
+    recommendable: strategies.some((strategy) => strategy.status === 'contract_ready' && strategy.legs.length > 0),
   }
 }
 
-async function deepseekChat(messages, systemExtra = '') {
+async function deepseekRequest(body) {
   let response
   try {
     response = await fetch(`${deepseekBaseUrl}/chat/completions`, {
@@ -356,29 +455,7 @@ async function deepseekChat(messages, systemExtra = '') {
         // aigateway.qveris.ai/v1 时该来源会记录到网关统计。
         'x-qveris-source': 'options-assistant',
       },
-      body: JSON.stringify({
-        model: deepseekModel,
-        temperature: 0.2,
-        messages: [
-          {
-            role: 'system',
-            content:
-              [
-                'You are Qveris AI, a US options research assistant for paper-trade education.',
-                'Use only the JSON marketContext supplied by Qveris. Never invent prices, Greeks, probabilities, expirations, strikes, costs, or data sources.',
-                'Deterministic calculations such as payoff, scenario P/L, max loss, max profit, breakeven, and simulator values are already computed by Qveris engines; explain them, do not recalculate or override them.',
-                'Strategy rankDetails and playbook are deterministic Qveris engine outputs. Use them for suitability, exit, adjustment, and risk-management explanations; do not invent different rules.',
-                'When discussing a strategy, explain why the DTE and strikes fit the user view, risk budget, and experience level. If the user asks to adjust DTE or strikes, explain the trade-off in risk, cost/credit, breakeven, theta, gamma, IV/event risk, and assignment risk when relevant.',
-                'Use Qveris defaults: option buyers generally need more time; short premium defaults around 30-45 DTE; long directional trades default around 30-60 DTE; DTE under 7 is high risk for beginners unless explicitly requested.',
-                'Do not give personalized investment advice. Do not say buy, sell, hold, enter, exit, should, must, guaranteed, safe, or risk-free.',
-                'If data is missing, explicitly say it is missing and keep the answer conditional.',
-                'Keep answers concise, beginner-friendly, and clearly label scenarios as scenarios, not predictions.',
-                systemExtra,
-              ].filter(Boolean).join(' '),
-          },
-          ...messages,
-        ],
-      }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(upstreamTimeoutMs),
     })
   } catch {
@@ -391,9 +468,60 @@ async function deepseekChat(messages, systemExtra = '') {
     throw safeError('DeepSeek returned an unreadable response.', 502)
   }
   if (!response.ok) throw safeError('DeepSeek request failed.', response.status || 502)
-  return {
-    model: payload.model ?? deepseekModel,
-    text: payload.choices?.[0]?.message?.content ?? '',
+  return payload
+}
+
+// With tools, the model may call read-only data tools for a few rounds before it writes the final JSON answer.
+async function deepseekChat(messages, systemExtra = '', { tools, runTool, maxRounds = 3, maxCallsPerRound = 4 } = {}) {
+  const conversation = [
+    {
+      role: 'system',
+      content:
+        [
+          'You are Qveris AI, a US options research assistant for paper-trade education.',
+          'Use only the JSON marketContext supplied by Qveris and the results of the Qveris data tools you are given. Never invent prices, Greeks, probabilities, expirations, strikes, costs, or data sources.',
+          'Deterministic calculations such as payoff, scenario P/L, max loss, max profit, breakeven, and simulator values are already computed by Qveris engines; explain them, do not recalculate or override them.',
+          'Strategy rankDetails and playbook are deterministic Qveris engine outputs. Use them for suitability, exit, adjustment, and risk-management explanations; do not invent different rules.',
+          'When discussing a strategy, explain why the DTE and strikes fit the user view, risk budget, and experience level. If the user asks to adjust DTE or strikes, explain the trade-off in risk, cost/credit, breakeven, theta, gamma, IV/event risk, and assignment risk when relevant.',
+          'Use Qveris defaults: option buyers generally need more time; short premium defaults around 30-45 DTE; long directional trades default around 30-60 DTE; DTE under 7 is high risk for beginners unless explicitly requested.',
+          'Do not give personalized investment advice. Do not say buy, sell, hold, enter, exit, should, must, guaranteed, safe, or risk-free.',
+          'If data is missing, explicitly say it is missing and keep the answer conditional.',
+          'Keep answers concise, beginner-friendly, and clearly label scenarios as scenarios, not predictions.',
+          systemExtra,
+        ].filter(Boolean).join(' '),
+    },
+    ...messages,
+  ]
+  for (let round = 0; ; round += 1) {
+    const offerTools = Boolean(tools?.length && runTool && round < maxRounds)
+    const payload = await deepseekRequest({
+      model: deepseekModel,
+      temperature: 0.2,
+      messages: conversation,
+      ...(offerTools ? { tools, tool_choice: 'auto' } : {}),
+    })
+    const message = payload.choices?.[0]?.message ?? {}
+    const calls = Array.isArray(message.tool_calls) ? message.tool_calls : []
+    if (!offerTools || !calls.length) {
+      return { model: payload.model ?? deepseekModel, text: message.content ?? '' }
+    }
+    conversation.push({ role: 'assistant', content: message.content ?? '', tool_calls: calls })
+    // Every tool_call id needs an answer, even the ones over the per-round cap.
+    for (const [index, call] of calls.entries()) {
+      let content
+      if (index >= maxCallsPerRound) {
+        content = { error: 'Too many tool calls in one round; ask again if still needed.' }
+      } else {
+        let args = {}
+        try {
+          args = JSON.parse(call.function?.arguments || '{}')
+        } catch {
+          args = {}
+        }
+        content = await runTool(call.function?.name, args)
+      }
+      conversation.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(content).slice(0, 6000) })
+    }
   }
 }
 
@@ -412,6 +540,7 @@ function isOutOfScopeAssistantMessage(message) {
     'profit', 'loss', 'breakeven', 'delta', 'theta', 'vega', 'iv', 'volatility', 'stock',
     'ticker', 'strategy', 'paper', 'trade', 'bullish', 'bearish', 'neutral', 'shares',
     'price', 'target', 'budget', 'portfolio', 'beginner', 'explain', 'compare',
+    '期权', '策略', '股票', '股价', '风险', '行权', '价差', '看涨', '看跌', '波动', '财报', '美股', '合约', '到期', '亏损', '收益',
   ]
   const blocked = ['joke', 'politic', 'weather', 'recipe', 'movie', 'song', 'dating', '笑话', '天气', '菜谱', '电影', '歌曲', '约会', '政治']
   return blocked.some((word) => text.includes(word)) && !allowed.some((word) => text.includes(word))
@@ -429,17 +558,17 @@ function parseJsonQuery(value) {
 function marketRangeParams(range) {
   const normalized = String(range || '1h').toLowerCase()
   const table = {
-    '15m': { kind: 'intraday', fiuType: 7, pageSize: 140 },
-    '30m': { kind: 'intraday', fiuType: 8, pageSize: 140 },
-    '1h': { kind: 'intraday', fiuType: 9, pageSize: 160 },
-    '4h': { kind: 'intraday', fiuType: 12, pageSize: 160 },
-    '1d': { kind: 'daily', fiuType: 0, pageSize: 252 },
-    '5d': { kind: 'intraday', fiuType: 8, pageSize: 140 },
-    '1m': { kind: 'intraday', fiuType: 9, pageSize: 160 },
-    daily: { kind: 'daily', fiuType: 0, pageSize: 126 },
-    '3m': { kind: 'daily', fiuType: 0, pageSize: 66 },
-    '1y': { kind: 'daily', fiuType: 0, pageSize: 252 },
-    '5y': { kind: 'daily', fiuType: 1, pageSize: 260 },
+    '15m': { kind: 'intraday', interval: '15min', pageSize: 140 },
+    '30m': { kind: 'intraday', interval: '30min', pageSize: 140 },
+    '1h': { kind: 'intraday', interval: '60min', pageSize: 160 },
+    '4h': { kind: 'intraday', interval: '60min', group: 4, pageSize: 160 },
+    '1d': { kind: 'daily', pageSize: 252 },
+    '5d': { kind: 'intraday', interval: '30min', pageSize: 140 },
+    '1m': { kind: 'intraday', interval: '60min', pageSize: 160 },
+    daily: { kind: 'daily', pageSize: 126 },
+    '3m': { kind: 'daily', pageSize: 66 },
+    '1y': { kind: 'daily', pageSize: 252 },
+    '5y': { kind: 'weekly', pageSize: 260 },
   }
   return table[normalized] ?? table['1h']
 }
@@ -463,8 +592,12 @@ function emptyQuote(ticker) {
 }
 
 function validLiveQuote(ticker, result) {
-  const quote = normalizeFiuQuote(ticker, result)
+  const quote = normalizeAlphaVantageQuote(ticker, result, { marketOpen: isUsRegularMarketOpen() })
   return quote.price && quote.timestamp ? quote : null
+}
+
+function newYorkToday() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
 }
 
 function selectUsefulExpirations(expirations, today) {
@@ -493,7 +626,6 @@ function unavailableOptions(ticker, message) {
     message,
     dataGaps: [
       'QVERIS_DATA_GAP: Live US options chain unavailable; contract-level strategy recommendations are pending.',
-      'QVERIS_DATA_GAP: gamma/theta/vega/rho unavailable without a stable normalized options chain.',
       'QVERIS_DATA_GAP: option reference master unavailable; US equity multiplier 100 remains an assumption.',
     ],
   }
@@ -575,182 +707,287 @@ async function handle(req, res) {
       const systemExtra = isZh
         ? 'CRITICAL LANGUAGE RULE: You MUST write every word of your response in Simplified Chinese (简体中文). Do not use any English words except stock tickers, option Greeks, and technical abbreviations (e.g. NVDA, IV, ATM).'
         : ''
-      const agentPlan = buildAssistantPlan({ userMessage: prompt, marketContext, history: [], isZh })
       const content = JSON.stringify({ prompt, marketContext })
       const modelResponse = await deepseekChat([{ role: 'user', content }], systemExtra)
-      const guarded = guardAssistantText(modelResponse.text, { marketContext, plan: agentPlan, isZh })
+      const guarded = guardAssistantText(modelResponse.text, { isZh })
       return json(res, 200, {
         ...modelResponse,
         text: guarded.warnings.length ? `${guarded.warnings[0]}\n\n${guarded.answer}` : guarded.answer,
         warnings: guarded.warnings,
-        dataGaps: guarded.dataGaps,
+        dataGaps: Array.isArray(marketContext.dataGaps) ? marketContext.dataGaps : [],
       })
     }
 
     if (url.pathname === '/api/assistant/chat' && req.method === 'POST') {
       const body = await readJson(req)
-      const userMessage = String(body.userMessage ?? '').trim()
+      const userMessage = String(body.userMessage ?? '').trim().slice(0, 2000)
       if (!userMessage) throw safeError('userMessage is required.', 400)
-      const isZh = body.language === 'zh'
-      if (isPromptInjection(userMessage) || isOutOfScopeAssistantMessage(userMessage)) {
-        return json(res, 200, {
-          intent: 'refuse',
-          answer: isZh
-            ? '我只能协助期权策略、风险、收益分析及市场观点收集，请在此范围内提问。'
-            : 'I can only help with options strategy, risk, payoff, paper-trade scenarios, and collecting your market view.',
-          referencedStrategyIds: [],
-          warnings: ['Out-of-scope question refused.'],
-          dataGaps: [],
-        })
-      }
+      const isZh = replyLanguage(userMessage, Array.isArray(body.history) ? body.history : [], body.language) === 'zh'
+      const rawPrior = normalizeAgentState(body.agentState, normalizeAgentProfile)
       const clientContext = body.marketContext ?? {}
-      const history = Array.isArray(body.history) ? body.history : []
-      const systemExtra = isZh
-        ? 'CRITICAL LANGUAGE RULE: You MUST write every word of your response in Simplified Chinese (简体中文). Do not use any English words except stock tickers, option Greeks, and technical abbreviations (e.g. NVDA, IV, ATM).'
-        : ''
-
-      const currentProfile = profileFromMarketContext(clientContext)
-      const parserFallback = buildAssistantPlan({
-        userMessage,
-        marketContext: { parsedView: clientContext.parsedView ?? {} },
-        history,
-        isZh,
-      })
-      let extraction = normalizeExtraction(undefined, {
-        intent: classifyAssistantIntent(userMessage),
-        profilePatch: parserFallback.structuredUpdates,
-      })
-      try {
-        const extractionResponse = await deepseekChat([
-          {
-            role: 'user',
-            content: JSON.stringify(buildExtractionPrompt({
-              userMessage,
-              history,
-              currentProfile,
-              language: isZh ? 'zh' : 'en',
-            })),
-          },
-        ], systemExtra)
-        extraction = normalizeExtraction(safeParseAssistantJson(extractionResponse.text), extraction)
-      } catch {
-        // Deterministic parsing keeps the assistant usable when the model is unavailable.
-      }
-      const profile = mergeAgentProfile(currentProfile, {
-        ...extraction.profilePatch,
-        ...extraction.requestedAdjustment,
-      })
-      const structuredUpdates = profileUpdatesForClient(extraction.profilePatch)
-      const missingField = nextRequiredProfileField(extraction.intent, profile)
-      if (missingField) {
-        const question = profileQuestion(missingField, isZh)
+      const pageTicker = profileFromMarketContext(clientContext).ticker
+      if (isPromptInjection(userMessage) || isOutOfScopeAssistantMessage(userMessage) || isAdviceRequest(userMessage)) {
+        const advice = isAdviceRequest(userMessage) && !isPromptInjection(userMessage)
         return json(res, 200, {
-          intent: 'clarify',
-          answer: question,
-          followUpQuestion: question,
-          structuredUpdates,
+          intent: advice ? 'clarify' : 'refuse',
+          mode: advice ? 'boundary' : 'refuse',
+          answer: advice
+            ? adviceBoundaryAnswer(rawPrior.profile.ticker ?? pageTicker, isZh)
+            : isZh
+              ? '我专注于期权策略、风险收益分析和模拟交易学习。可以告诉我你关注的标的和看法，我来帮你筛选和解释策略。'
+              : 'I focus on options strategies, risk/payoff analysis, and paper-trading education. Tell me a ticker and your view and I can screen and explain strategies.',
+          sections: [],
           referencedStrategyIds: [],
           warnings: [],
           dataGaps: [],
-          agentState: { status: 'collecting', profile, missingFields: [missingField] },
+          // Off-topic turns do not consume the open follow-up question.
+          agentState: rawPrior,
         })
       }
+      const history = (Array.isArray(body.history) ? body.history : [])
+        .filter((item) => item && ['user', 'assistant'].includes(item.role))
+        .slice(-8)
+        .map((item) => ({ role: item.role, content: String(item.content ?? '').slice(0, 1200) }))
+      const systemExtra = isZh
+        ? 'CRITICAL LANGUAGE RULE: You MUST write every word of your response in Simplified Chinese (简体中文). Do not use any English words except stock tickers, option Greeks, strategy names, and technical abbreviations (e.g. NVDA, IV, ATM).'
+        : 'CRITICAL LANGUAGE RULE: The user is writing in English. Write the whole response in English, even if earlier turns were in Chinese.'
 
-      const needsEngine = ['recommend', 'compare', 'adjust', 'risk_check', 'explain'].includes(extraction.intent)
-      const selectedStrategyId = String(clientContext.selectedStrategy?.id ?? clientContext.selectedStrategyId ?? '') || undefined
-      const canonicalContext = needsEngine
-        ? await canonicalAssistantContext(profile, selectedStrategyId)
-        : {
-            ticker: profile.ticker,
-            market: undefined,
-            options: undefined,
-            strategies: [],
-            selectedStrategy: undefined,
-            parsedView: clientContext.parsedView ?? {},
-            snapshotId: undefined,
-            generatedAt: new Date().toISOString(),
-            dataGaps: [],
-            recommendable: false,
-          }
-
-      if (needsEngine && !canonicalContext.recommendable) {
-        const answer = isZh
-          ? '当前行情或期权链不足以生成合约级推荐，我只能提供策略教学说明。'
-          : 'The current market or option-chain snapshot is insufficient for a contract-level recommendation; I can provide strategy education only.'
-        return json(res, 200, {
-          intent: 'clarify',
-          answer,
-          followUpQuestion: isZh ? '是否先了解适合当前观点的策略类型？' : 'Would you like an educational overview of strategy types for this view?',
-          structuredUpdates,
-          referencedStrategyIds: [],
-          warnings: [answer],
-          dataGaps: canonicalContext.dataGaps,
-          agentState: { status: 'degraded', profile, snapshotId: canonicalContext.snapshotId },
-        })
-      }
-
-      const agentPlanBase = buildAssistantPlan({ userMessage, marketContext: canonicalContext, history, isZh })
-      const agentPlan = {
-        ...agentPlanBase,
-        intent: extraction.intent,
-        structuredUpdates,
-        agentState: {
-          status: needsEngine ? 'recommended' : 'ready',
-          profile,
-          snapshotId: canonicalContext.snapshotId,
-          missingFields: [],
-        },
-      }
-      if (agentPlan.directResponse) {
-        return json(res, 200, {
-          ...agentPlan.directResponse,
-          structuredUpdates,
-          agentState: agentPlan.agentState,
-        })
-      }
-
-      let parsed
+      // 1. Understand the turn: deterministic rules first, the model fills semantic gaps.
+      const turn = parseAssistantTurn(userMessage, rawPrior)
+      const formProfile = profileFromMarketContext(clientContext)
+      let modelExtraction = { intent: 'clarify', profilePatch: {} }
       try {
-        const response = await deepseekChat([
-          {
-            role: 'user',
-            content: JSON.stringify(buildExplanationPrompt({
-              userMessage,
-              history,
-              profile,
-              plan: agentPlan,
-              marketContext: canonicalContext,
-              language: isZh ? 'zh' : 'en',
-            })),
-          },
-        ], systemExtra)
-        parsed = safeParseAssistantJson(response.text)
-      } catch {
-        parsed = null
+        const extractionResponse = await deepseekChat([{
+          role: 'user',
+          content: JSON.stringify(buildExtractionPrompt({
+            userMessage,
+            history,
+            currentProfile: mergeAgentProfile(formProfile, rawPrior.profile),
+            pendingField: rawPrior.pending?.field,
+            language: isZh ? 'zh' : 'en',
+          })),
+        }], systemExtra)
+        const parsedExtraction = safeParseAssistantJson(extractionResponse.text)
+        if (parsedExtraction) modelExtraction = normalizeExtraction(parsedExtraction)
+        else console.warn('[assistant] extraction returned non-JSON')
+      } catch (error) {
+        console.warn('[assistant] extraction failed:', error?.message)
       }
-      if (!parsed || unknownFinancialNumbers(parsed, { profile, agentPlan, canonicalContext }).length) {
-        const fallback = agentFallbackResponse(agentPlan, isZh)
-        return json(res, 200, {
-          ...fallback,
-          structuredUpdates,
-          agentState: agentPlan.agentState,
-        })
+      const modelPatch = sanitizeModelPatch(
+        mergeAgentProfile(modelExtraction.profilePatch, modelExtraction.requestedAdjustment),
+        userMessage,
+        { ...turn, pendingField: rawPrior.pending?.field },
+      )
+      const patch = mergeAgentProfile(modelPatch, turn.patch)
+      // The engine only understands canonical horizons; free-form model output is discarded.
+      if (patch.horizon && !turn.patch.horizon) {
+        const horizon = canonicalHorizon(patch.horizon)
+        if (horizon) patch.horizon = horizon
+        else delete patch.horizon
       }
-      return json(res, 200, {
-        ...enforceAgentResponse(parsed, canonicalContext, agentPlan, isZh),
+
+      // 2. Memory: a new ticker drops ticker-specific facts; the page form supplies defaults for the rest.
+      const { prior, tickerChanged } = scopeStateToTicker(rawPrior, patch.ticker, formProfile.ticker)
+      const activeTicker = patch.ticker ?? prior.profile.ticker ?? formProfile.ticker
+      const pageProfile = formProfile.ticker && formProfile.ticker !== activeTicker
+        ? withoutTickerScoped(Object.fromEntries(Object.entries(formProfile).filter(([key]) => key !== 'ticker')))
+        : formProfile
+      // "before" is what the user was looking at, so a ticker switch counts as a change.
+      const before = mergeAgentProfile(prior.profile, pageProfile)
+      const previousTicker = rawPrior.profile.ticker ?? formProfile.ticker
+      if (previousTicker) before.ticker = previousTicker
+      else delete before.ticker
+
+      let intent = resolveIntent(turn.intent, { prior, patch, skippedField: turn.skippedField, message: userMessage, forecast: turn.forecast })
+      if (intent === 'clarify' && !turn.forecast && modelExtraction.intent !== 'refuse') intent = modelExtraction.intent
+      if (intent === 'adjust' && !patch.horizon) {
+        const shifted = shiftHorizon(before.horizon, userMessage)
+        if (shifted) patch.horizon = shifted
+      }
+      let changes = []
+      let memoryProfile
+      let profile
+      let structuredUpdates
+      const settle = () => {
+        changes = Object.keys(patch).filter((key) => JSON.stringify(patch[key]) !== JSON.stringify(before[key]))
+        // Memory always records which ticker the conversation is about, even when it came from the page.
+        memoryProfile = mergeAgentProfile({ ...prior.profile, ticker: activeTicker }, patch)
+        profile = mergeAgentProfile({ ...before, ticker: activeTicker }, patch)
+        structuredUpdates = profileUpdatesForClient(patch)
+      }
+      settle()
+      // Fields the user settled on the page form count as answered; the chat does not ask for them again.
+      const formConfirmed = (Array.isArray(clientContext.confirmedFields) ? clientContext.confirmedFields : [])
+        .map(String)
+        .filter((field) => ['riskBudget', 'experienceLevel', 'acceptsAssignment', 'direction', 'horizon', 'targetPrice'].includes(field) && formProfile[field] !== undefined)
+      const confirmed = new Set([...Object.keys(prior.profile), ...Object.keys(patch), ...formConfirmed, ...turn.confirmedFields])
+      const asked = [...new Set([...prior.asked, ...(turn.skippedField ? [turn.skippedField] : [])])]
+
+      // 3. Ground the turn in live data. A strategy the user just picked on the page wins over the chat focus;
+      //    otherwise "this one" keeps meaning the strategy the conversation was about.
+      const reference = turn.reference ?? strategyReference(userMessage, prior)
+      const clientSelectedId = String(clientContext.selectedStrategy?.id ?? clientContext.selectedStrategyId ?? '') || undefined
+      const pageSelectionChanged = Boolean(!tickerChanged && clientSelectedId && clientSelectedId !== prior.clientSelectedId)
+      const selectedStrategyId = pageSelectionChanged ? clientSelectedId : prior.focusStrategyId ?? (tickerChanged ? undefined : clientSelectedId)
+      // A new view re-screens from scratch, so contract edits made for the old screen no longer apply.
+      const rescreened = tickerChanged || changes.some((field) => ['direction', 'horizon', 'strength', 'targetPrice'].includes(field))
+      let contractOverrides = rescreened ? {} : prior.contractOverrides
+      const clientStrategy = !rescreened && pageTicker === activeTicker ? clientContext.selectedStrategy : undefined
+      const loadContext = () => canonicalAssistantContext(profile, selectedStrategyId, contractOverrides, clientStrategy).catch((error) => {
+        console.warn('[assistant] market context failed:', error?.message)
+        return { strategies: [], dataGaps: [`QVERIS_MARKET_GAP: ${error?.message || 'market context unavailable'}`] }
+      })
+      let context = profile.ticker && intent !== 'refuse' ? await loadContext() : { strategies: [], dataGaps: [] }
+      if (context.appliedOverrides) contractOverrides = context.appliedOverrides
+      const spot = Number(context.market?.price) || undefined
+      const contracts = Array.isArray(context.options?.contracts) ? context.options.contracts : []
+      const leadExpiration = (context.selectedStrategy ?? context.strategies?.find((strategy) => strategy.legs?.length))?.legs?.[0]?.expiration
+      const volatility = spot && contracts.length ? volatilitySummary(contracts, spot, leadExpiration) : undefined
+
+      // A target that contradicts the view or sits far outside the priced range is confirmed before it is used.
+      let targetIssue
+      if (patch.targetPrice !== undefined && changes.includes('targetPrice') && !turn.confirmedFields.includes('targetPrice') && spot) {
+        const days = horizonDays(profile.horizon)
+        const iv = (spot && contracts.length ? volatilitySummary(contracts, spot, new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10)) : undefined)?.impliedVolatility
+        targetIssue = targetSanity({ target: patch.targetPrice, spot, impliedVolatility: iv, days, direction: profile.direction })
+        if (targetIssue) {
+          delete patch.targetPrice
+          settle()
+        }
+      }
+
+      // Contract-level edits ("行权价换成 1150", "宽一点", "2 张") re-price the focus strategy's legs on the live chain.
+      let contractResult
+      if (intent === 'adjust' && turn.contract && !targetIssue && !turn.invalid.length) {
+        const focusId = reference?.id
+          ?? (pageSelectionChanged ? clientSelectedId : undefined)
+          ?? prior.focusStrategyId
+          ?? clientSelectedId
+          ?? prior.lastReferencedIds?.[0]
+        const current = context.strategies?.find((strategy) => strategy.id === focusId && strategy.legs?.length)
+        const base = context.baseStrategies?.find((strategy) => strategy.id === focusId)
+        if (!current || !base) {
+          contractResult = { status: 'error', error: focusId ? 'no_legs' : 'no_focus' }
+        } else {
+          const resolution = resolveContractAdjustment(current, turn.contract, contracts)
+          const adjusted = resolution.error
+            ? undefined
+            : adjustStrategyLegs({ baseStrategy: base, optionChain: context.options, view: context.parsedView, adjustments: resolution.adjustments })
+          if (resolution.error) contractResult = { status: 'error', ...resolution, strategy: current }
+          else if (!adjusted?.strategy) contractResult = { status: 'error', error: 'strike_missing', legs: resolution.adjustments, strategy: current }
+          else {
+            contractResult = { status: 'ok', before: current, after: adjusted.strategy, resolution }
+            contractOverrides = { ...contractOverrides, [base.id]: resolution.adjustments }
+            context = {
+              ...context,
+              strategies: context.strategies.map((strategy) => (strategy.id === base.id ? adjusted.strategy : strategy)),
+              selectedStrategy: context.selectedStrategy?.id === base.id ? adjusted.strategy : context.selectedStrategy,
+            }
+          }
+        }
+      }
+
+      const plan = buildAssistantPlan({
+        intent,
+        message: userMessage,
+        profile,
+        confirmed,
+        context,
+        prior: { ...prior, asked },
+        reference,
+        references: turn.references,
+        changes,
+        forecast: turn.forecast,
+        missingOrdinals: turn.missingOrdinals,
+        invalid: turn.invalid,
+        declinedField: turn.declinedField,
+        targetIssue,
+        contractResult,
+        scenarioPrice: turn.scenarioPrice,
+        volatility,
+        isZh,
+      })
+      // The narrator states adjustments as from -> to instead of guessing their direction from history.
+      const shown = (field, value) => {
+        if (value === undefined || value === null) return null
+        if (!isZh) return value
+        if (field === 'horizon') return horizonZh[value] ?? value
+        if (field === 'direction') return { bullish: '看涨', bearish: '看跌', neutral: '中性', volatile: '大波动' }[value] ?? value
+        if (field === 'strength') return { mild: '温和', moderate: '中等', strong: '强烈' }[value] ?? value
+        if (field === 'experienceLevel') return { beginner: '新手', intermediate: '有一定经验', advanced: '熟练' }[value] ?? value
+        return value
+      }
+      if (changes.length) plan.changed = changes.map((field) => before[field] == null
+        ? { field, newlySet: shown(field, patch[field]) }
+        : { field, from: shown(field, before[field]), to: shown(field, patch[field]) })
+      const nextState = nextAgentState({ prior, plan, intent, memoryProfile, asked, changes, clientSelectedId: tickerChanged ? undefined : clientSelectedId, contractOverrides })
+      const responseBase = {
+        intent,
+        mode: plan.mode,
+        sections: plan.cards,
+        referencedStrategyIds: plan.referencedStrategyIds,
+        assumptions: plan.assumptions,
+        dataGaps: plan.dataGaps,
         structuredUpdates,
-        agentState: agentPlan.agentState,
+        agentState: nextState,
+        snapshotId: context.snapshotId,
+        ...(plan.contractAdjustment ? { contractAdjustment: plan.contractAdjustment } : {}),
+      }
+      const deterministic = deterministicAnswer(plan, isZh)
+      const defaultFollowUp = plan.followUpText ?? (plan.followUpField ? profileQuestion(plan.followUpField, isZh) : undefined)
+
+      if (['ask', 'adjust_unsupported', 'ordinal_missing', 'invalid_input', 'target_check', 'contract_clarify'].includes(plan.mode)) {
+        return json(res, 200, { ...responseBase, answer: deterministic, followUpQuestion: undefined, warnings: [], source: 'deterministic' })
+      }
+
+      // 4. The model narrates the deterministic plan and may look up extra facts with read-only data tools.
+      //    Any number that is not from the plan, the user's message or a tool result falls back to deterministic text.
+      const toolbox = context.market?.price
+        ? createAssistantTools({ ticker: profile.ticker, context, fetchJson: assistantApiJson, focusStrategyId: plan.focusStrategyId })
+        : undefined
+      let narrated
+      try {
+        const response = await deepseekChat([{
+          role: 'user',
+          content: JSON.stringify(buildExplanationPrompt({ userMessage, history, plan, language: isZh ? 'zh' : 'en', tools: Boolean(toolbox) })),
+        }], systemExtra, toolbox ? { tools: assistantToolSpecs, runTool: toolbox.run } : {})
+        narrated = safeParseAssistantJson(response.text)
+        if (!narrated) console.warn('[assistant] explanation returned non-JSON')
+      } catch (error) {
+        console.warn('[assistant] explanation failed:', error?.message)
+      }
+      if (toolbox?.calls.length) console.log(`[assistant] tools used: ${toolbox.calls.join(', ')}`)
+      const messageNumbers = [...userMessage.matchAll(/\d[\d,]*(?:\.\d+)?/g)].map((match) => Number(match[0].replaceAll(',', ''))).filter(Number.isFinite)
+      const trusted = { plan, extra: [profile.riskBudget, profile.targetPrice, ...messageNumbers, ...(toolbox?.outputs ?? [])] }
+      const unknownNumbers = (sentence) => unknownFinancialNumbers({ answer: sentence }, trusted)
+      const answerGuard = guardAssistantText(narrated?.answer, { isZh, unknownNumbers })
+      const followGuard = guardAssistantText(narrated?.followUpQuestion, { isZh, unknownNumbers })
+      // The lead sentence carries the conclusion; without it the remainder reads as a fragment.
+      const useModel = answerGuard.answer.length > 0 && !answerGuard.firstDropped && answerGuard.dropped <= Math.floor(answerGuard.total / 2)
+      if (answerGuard.dropped) console.warn(`[assistant] narration dropped ${answerGuard.dropped}/${answerGuard.total} sentences: ${answerGuard.reasons.join('; ')}`)
+      if (narrated && !useModel) console.warn('[assistant] narration rejected, using deterministic answer')
+      const followUpQuestion = (plan.followUpField ? followGuard.answer || defaultFollowUp : followGuard.answer) || undefined
+      let answer = useModel ? answerGuard.answer : deterministic
+      // The follow-up is shown on its own line; a question repeated at the end of the answer reads twice.
+      if (useModel && followUpQuestion) answer = answer.replace(/[^。！？!?\n]*[？?]\s*$/, '').trim() || answer
+      return json(res, 200, {
+        ...responseBase,
+        answer,
+        followUpQuestion,
+        warnings: [...answerGuard.warnings],
+        source: useModel ? 'model' : 'deterministic',
+        ...(toolbox?.calls.length ? { toolCalls: toolbox.calls } : {}),
       })
     }
 
     if (url.pathname.startsWith('/api/quote/')) {
       const ticker = tickerFromPath(url.pathname, '/api/quote/')
       if (!ticker) throw safeError('Ticker is required.', 400)
-      const cacheKey = `fiu-quote-v1:${ticker}`
+      const cacheKey = `av-quote-v1:${ticker}`
       const cachedBody = cached(quoteCache, 'quote', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)
-      const quote = validLiveQuote(ticker, await qverisExecute(tools.liveQuote, stockQuoteParameters([ticker])))
-      if (!quote) throw safeError('FIU realtime quote is unavailable.')
+      const quote = validLiveQuote(ticker, await qverisExecute(tools.liveQuote, stockQuoteParameters(ticker)))
+      if (!quote) throw safeError('Alpha Vantage quote is unavailable.')
       return json(res, 200, cacheSet(quoteCache, 'quote', cacheKey, quote, quoteRefreshMs))
     }
 
@@ -758,28 +995,21 @@ async function handle(req, res) {
       const ticker = tickerFromPath(url.pathname, '/api/market/')
       if (!ticker) throw safeError('Ticker is required.', 400)
       const range = url.searchParams.get('range') || '1h'
-      const cacheKey = `fiu-market-v2:${ticker}:${range}:${isUsRegularMarketOpen() ? 'open' : 'closed'}`
+      const cacheKey = `av-market-v1:${ticker}:${range}:${isUsRegularMarketOpen() ? 'open' : 'closed'}`
       const cachedBody = cached(marketCache, 'market', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)
       const rangeParams = marketRangeParams(range)
-      const date = new Date().toISOString().slice(0, 10)
       const [liveQuoteResult, candlesResult] = await Promise.allSettled([
-        qverisExecute(tools.liveQuote, stockQuoteParameters([ticker])),
-        qverisExecute(tools.candles, {
-          candleMode: 1,
-          timeMode: 0,
-          type: rangeParams.fiuType,
-          date: rangeParams.kind === 'daily' ? date : `${date} 23:59:59`,
-          symbol: `${ticker}.US`,
-          pageNum: 1,
-          pageSize: rangeParams.pageSize,
-        }, 100000),
+        qverisExecute(tools.liveQuote, stockQuoteParameters(ticker)),
+        qverisExecute(candleTool(rangeParams), candleParameters(ticker, rangeParams), 200000),
       ])
       const dataGaps = []
       const liveQuote = liveQuoteResult.status === 'fulfilled' ? validLiveQuote(ticker, liveQuoteResult.value) : null
-      if (!liveQuote) dataGaps.push(`QVERIS_MARKET_GAP: realtime quote snapshot unavailable (${liveQuoteResult.reason?.message ?? 'empty response'}).`)
-      const candles = candlesResult.status === 'fulfilled' ? normalizeFiuCandles(candlesResult.value) : []
-      if (candlesResult.status === 'rejected' || !candles.length) dataGaps.push(`QVERIS_MARKET_GAP: FIU OHLCV unavailable (${candlesResult.reason?.message ?? 'empty response'}).`)
+      if (!liveQuote) dataGaps.push(`QVERIS_MARKET_GAP: quote snapshot unavailable (${liveQuoteResult.reason?.message ?? 'empty response'}).`)
+      const candles = candlesResult.status === 'fulfilled'
+        ? aggregateCandles(normalizeAlphaVantageCandles(candlesResult.value), rangeParams.group ?? 1).slice(-rangeParams.pageSize)
+        : []
+      if (candlesResult.status === 'rejected' || !candles.length) dataGaps.push(`QVERIS_MARKET_GAP: Alpha Vantage OHLCV unavailable (${candlesResult.reason?.message ?? 'empty response'}).`)
       const snapshot = liveQuote ?? emptyQuote(ticker)
       const lastCandle = candles.at(-1)
       return json(res, 200, cacheSet(marketCache, 'market', cacheKey, {
@@ -791,7 +1021,7 @@ async function handle(req, res) {
         volume: snapshot.volume ?? lastCandle?.volume ?? null,
         candles,
         dataGaps,
-        message: dataGaps.length ? 'FIU market data loaded with explicit gaps.' : 'FIU realtime quote and OHLCV loaded through QVeris.',
+        message: dataGaps.length ? 'Alpha Vantage market data loaded with explicit gaps.' : 'Alpha Vantage quote and OHLCV loaded through QVeris.',
       }, marketRefreshMs))
     }
 
@@ -799,55 +1029,46 @@ async function handle(req, res) {
       const ticker = tickerFromPath(url.pathname, '/api/options/')
       if (!ticker) throw safeError('Ticker is required.', 400)
       const marketOpen = isUsRegularMarketOpen()
-      const cacheKey = `fiu-opra-v4:${ticker}:${marketOpen ? 'open' : 'closed'}`
+      const cacheKey = `av-options-v1:${ticker}:${marketOpen ? 'open' : 'closed'}`
       const cachedBody = cached(optionsCache, 'options', cacheKey)
       if (cachedBody) return json(res, 200, cachedBody)
       try {
-        const [liveQuoteResult, expirationResult] = await Promise.allSettled([
-          qverisExecute(tools.liveQuote, stockQuoteParameters([ticker])),
-          qverisExecute(tools.optionExpirations, { requestBody: { root: ticker } }, 30000),
+        const [liveQuoteResult, chainResult] = await Promise.allSettled([
+          qverisExecute(tools.liveQuote, stockQuoteParameters(ticker)),
+          qverisExecute(tools.optionChain, { function: 'REALTIME_OPTIONS', symbol: ticker, require_greeks: 'true' }, 20000),
         ])
+        if (chainResult.status === 'rejected') throw chainResult.reason
+        const today = newYorkToday()
+        const chain = normalizeAlphaVantageOptionChain(ticker, chainResult.value)
         const liveQuote = liveQuoteResult.status === 'fulfilled' ? validLiveQuote(ticker, liveQuoteResult.value) : null
-        const quoteSpot = liveQuote?.price ?? null
-        if (!quoteSpot) throw safeError('FIU underlying quote is unavailable.')
-        if (expirationResult.status === 'rejected') throw expirationResult.reason
-        const today = new Date().toISOString().slice(0, 10)
-        const expirations = selectUsefulExpirations(normalizeFiuExpirations(expirationResult.value), today)
-        const chains = await Promise.all(expirations.map(async (expiration) => normalizeFiuOptionChain(
-          ticker,
-          expiration,
-          await qverisExecute(tools.optionChain, { requestBody: { root: ticker, type: 0, expiration } }, 1000000),
-        )))
-        const rawContracts = chains.flatMap((chain) => chain.contracts)
-        const contracts = pruneFiuOptionContracts(rawContracts, quoteSpot)
-        const issues = chains.reduce((sum, chain) => ({
-          invalidMarkets: sum.invalidMarkets + chain.issues.invalidMarkets,
-          invalidGamma: sum.invalidGamma + chain.issues.invalidGamma,
-          invalidDelta: sum.invalidDelta + chain.issues.invalidDelta,
-          invalidValues: sum.invalidValues + chain.issues.invalidValues,
-        }), { invalidMarkets: 0, invalidGamma: 0, invalidDelta: 0, invalidValues: 0 })
+        const spot = liveQuote?.price ?? impliedSpotFromChain(chain.contracts, today)
+        if (!spot) throw safeError('Underlying price is unavailable for the option chain.')
+        const expirations = new Set(selectUsefulExpirations(optionExpirations(chain.contracts), today))
+        const contracts = pruneOptionContracts(chain.contracts.filter((row) => expirations.has(row.expiration)), spot)
+        const { issues } = chain
         const status = contracts.length ? 'available' : 'unavailable'
         const spotGaps = []
-        if (!liveQuote) spotGaps.push(`QVERIS_DATA_GAP: realtime stock quote unavailable (${liveQuoteResult.reason?.message ?? 'empty response'}).`)
+        if (!liveQuote) spotGaps.push(`QVERIS_DATA_GAP: stock quote unavailable (${liveQuoteResult.reason?.message ?? 'empty response'}); spot is implied from put-call parity.`)
         if (issues.invalidMarkets) spotGaps.push(`QVERIS_DATA_QUALITY: ${issues.invalidMarkets} crossed markets were excluded.`)
         if (issues.invalidGamma) spotGaps.push(`QVERIS_DATA_QUALITY: ${issues.invalidGamma} negative Gamma values were excluded.`)
         if (issues.invalidDelta) spotGaps.push(`QVERIS_DATA_QUALITY: ${issues.invalidDelta} invalid Delta values were excluded.`)
-        if (issues.invalidValues) spotGaps.push(`QVERIS_DATA_QUALITY: ${issues.invalidValues} negative OPRA quote, size, volume, open interest, or Vega values were isolated.`)
+        if (issues.invalidValues) spotGaps.push(`QVERIS_DATA_QUALITY: ${issues.invalidValues} negative quote, size, volume, open interest, or Vega values were isolated.`)
+        const market = liveQuote ?? { ...emptyQuote(ticker), price: spot, marketDataType: 'implied_from_options' }
         return json(res, 200, cacheSet(optionsCache, 'options', cacheKey, {
           ticker,
           status,
           mode: 'live',
-          dataSource: 'fiu_opra',
+          dataSource: 'alphavantage',
           contracts,
-          market: liveQuote ?? undefined,
+          market,
           asOf: new Date().toISOString(),
-          openInterestCadence: 'OPRA open interest is a daily field and may represent the previous trading day.',
+          openInterestCadence: 'Open interest is a daily field and may represent the previous trading day.',
           message: contracts.length
-            ? 'FIU OPRA option chain normalized through QVeris.'
-            : 'FIU OPRA returned no normalized US option contracts.',
+            ? 'Alpha Vantage option chain normalized through QVeris.'
+            : 'Alpha Vantage returned no normalized US option contracts.',
           dataGaps: [
             ...spotGaps,
-            'QVERIS_DATA_GAP: OPRA quote timestamps and timezone are not exposed by the chain response.',
+            'QVERIS_DATA_GAP: per-contract quote timestamps are not exposed by the chain response.',
             'QVERIS_DATA_GAP: US equity option multiplier 100 remains a product assumption.',
           ],
         }, marketOpen ? optionsRefreshMs : closedCacheMs))
@@ -870,7 +1091,7 @@ async function handle(req, res) {
         ticker,
         earnings: [],
         filings: [],
-        dataGaps: ['QVERIS_EVENTS_GAP: FIU does not currently expose a verified US earnings calendar or SEC filings endpoint.'],
+        dataGaps: ['QVERIS_EVENTS_GAP: the data provider does not currently expose a verified US earnings calendar or SEC filings endpoint.'],
       })
     }
 
@@ -892,24 +1113,10 @@ async function handle(req, res) {
   }
 }
 
-if (process.argv.includes('--quote-refresh-self-check')) {
-  const checks = [
-    [Date.UTC(2026, 6, 6, 12), -1], // 08:00 ET premarket
-    [Date.UTC(2026, 6, 6, 14), 1], // 10:00 ET regular session
-    [Date.UTC(2026, 6, 6, 21), -2], // 17:00 ET postmarket
-    [Date.UTC(2026, 6, 4, 16), -2], // Saturday: last postmarket snapshot
-  ]
-  for (const [now, expectedSessionId] of checks) {
-    const parameters = stockQuoteParameters(['MU', 'AAPL'], now)
-    if (JSON.stringify(parameters) !== JSON.stringify({ fields: ['snapshot'], symbols: ['MU.US', 'AAPL.US'], timeMode: 0, sessionId: expectedSessionId })) {
-      throw new Error('FIU quote parameters self-check failed.')
-    }
-  }
-  console.log('FIU quote parameters self-check passed.')
-} else if (process.argv.includes('--smoke')) {
+if (process.argv.includes('--smoke')) {
   const ticker = process.argv.at(-1)?.startsWith('--') ? 'NVDA' : process.argv.at(-1) || 'NVDA'
-  const market = await qverisExecute(tools.liveQuote, stockQuoteParameters([ticker.toUpperCase()]))
-  console.log(JSON.stringify({ ok: true, ticker: ticker.toUpperCase(), price: normalizeFiuQuote(ticker.toUpperCase(), market).price }, null, 2))
+  const market = await qverisExecute(tools.liveQuote, stockQuoteParameters(ticker.toUpperCase()))
+  console.log(JSON.stringify({ ok: true, ticker: ticker.toUpperCase(), price: normalizeAlphaVantageQuote(ticker.toUpperCase(), market).price }, null, 2))
 } else {
   createServer(handle).listen(port, host, () => {
     const origin = `http://${host}:${port}`

@@ -20,12 +20,13 @@ import { AssistantBot } from './components/AssistantBot'
 import { HomePage } from './components/HomePage'
 import { OptionChainTable } from './components/OptionChainTable'
 import { StrategyCard } from './components/StrategyCard'
-import type { AssistantStructuredUpdates } from './core/assistantPolicy'
+import type { AssistantContractAdjustment, AssistantStructuredUpdates } from './core/assistantPolicy'
 import type { ActiveSimulatorState } from './core/simulatorChartEngine'
 import { optionExpirations } from './core/dashboardData'
 import { selectDefaultExpiration } from './core/expirationEngine'
 import { parseUserView } from './core/parseUserView'
 import { recordProductEvent } from './core/productEventsApi'
+import { adjustStrategyLegs } from './core/strategyAdjustmentEngine'
 import { recommendStrategyTypes } from './core/strategyRecommendationEngine'
 import { useT } from './i18n'
 import type { QverisMarketSnapshot, QverisOptionsResponse } from './types/optionTypes'
@@ -499,9 +500,21 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
     }
     if (!Object.keys(patch).length) return
     if (direction) setStrategyFilter(direction)
-    setForm((current) => ({ ...current, ...patch }))
+    // A target price or share count belongs to the old ticker; drop it unless the same update restates it.
+    const scoped = (current: FormState): Partial<FormState> =>
+      patch.ticker && patch.ticker.trim().toUpperCase() !== current.ticker.trim().toUpperCase()
+        ? {
+            ...(patch.target_price === undefined ? { target_price: '' } : {}),
+            ...(patch.shares_count === undefined ? { shares_count: '' } : {}),
+            ...(patch.owns_shares === undefined ? { owns_shares: false } : {}),
+          }
+        : {}
+    // Keep the URL on the ticker the assistant switched to, as a top-bar search would.
+    if (patch.ticker && patch.ticker.trim().toUpperCase() !== ticker) navigate(lastTradePath(patch.ticker.trim().toUpperCase()))
+    setForm((current) => ({ ...current, ...scoped(current), ...patch }))
     setSubmitted((current) => ({
       ...current,
+      ...scoped(current),
       ...patch,
       ticker: (patch.ticker ?? current.ticker).trim().toUpperCase(),
     }))
@@ -512,6 +525,14 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
     setSelectedStrategyId(baseId)
     const expiry = adjusted.legs[0]?.expiration
     if (expiry) setChainExpiration(expiry)
+  }
+
+  // The chat sends absolute leg values; the page re-prices them on its own chain, exactly like a manual edit.
+  function applyAssistantContractAdjustment({ strategyId, adjustments }: AssistantContractAdjustment) {
+    const base = strategies.find((strategy) => strategy.id === strategyId)
+    if (!base || !options.data || adjustments.some((item) => item.legIndex >= base.legs.length)) return
+    const result = adjustStrategyLegs({ baseStrategy: base, optionChain: options.data, view: parsedView, adjustments })
+    if (result.strategy) updateAdjustedStrategy(base.id, result.strategy)
   }
 
   return (
@@ -752,6 +773,7 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
             {strategies.map((strategy) => (
               <StrategyCard
                 key={strategy.id}
+                adjusted={strategyOverrides[strategy.id]}
                 onSelect={(item) => setSelectedStrategyId((current) => (current === item.id ? undefined : item.id))}
                 onProjectionChange={setActiveSimulator}
                 onAdjusted={updateAdjustedStrategy}
@@ -769,8 +791,11 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
       </section>
       <AssistantBot
         market={displayedMarket}
+        onSelectStrategy={setSelectedStrategyId}
         onStructuredUpdates={applyAssistantUpdates}
+        onContractAdjustment={applyAssistantContractAdjustment}
         options={options.data}
+        profileApplied={profileApplied}
         parsedView={parsedView}
         selectedStrategy={selectedStrategy}
         strategies={strategies}

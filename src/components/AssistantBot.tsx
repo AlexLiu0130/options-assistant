@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Bot, Loader2, Send, X } from 'lucide-react'
 import {
   buildAssistantContext,
   fallbackAssistantResponse,
   normalizeAssistantUpdates,
+  type AssistantAgentState,
   type AssistantChatResponse,
+  type AssistantContractAdjustment,
   type AssistantStructuredUpdates,
 } from '../core/assistantPolicy'
 import { recordProductEvent } from '../core/productEventsApi'
@@ -14,40 +16,77 @@ import type { ParsedView, StrategyCandidate } from '../types/strategyTypes'
 
 type Message = {
   role: 'user' | 'assistant'
+  /** Plain text kept for conversation history sent back to the server. */
   content: string
+  response?: AssistantChatResponse
 }
 
 const chips = {
   en: [
-    ['Find strategy', 'Find the best strategy for my current view.'],
+    ['Find strategy', 'Recommend strategies for my current view.'],
     ['Explain selected', 'Explain the selected strategy.'],
     ['Compare', 'Compare the current strategy candidates.'],
-    ['Risk check', 'Check whether the current strategy fits my risk budget.'],
-    ['Beginner help', 'Explain this in beginner-friendly terms.'],
+    ['Risk check', 'Check whether the selected strategy fits my risk budget.'],
+    ['What is theta?', 'What is theta and how does it affect my position?'],
   ],
   zh: [
-    ['找策略', '根据我当前观点找合适的策略。'],
+    ['找策略', '根据我当前观点推荐合适的策略。'],
     ['解释当前策略', '解释当前选中的策略。'],
-    ['对比候选', '对比当前几个候选策略。'],
+    ['对比候选', '对比一下当前几个候选策略。'],
     ['检查风险', '检查当前策略是否符合我的风险预算。'],
-    ['新手解释', '用新手能理解的方式解释。'],
+    ['什么是 Theta', '什么是 Theta，它对我的持仓有什么影响？'],
   ],
 } as const
 
 function intro(lang: 'en' | 'zh') {
   return lang === 'zh'
-    ? '请告诉我您的市场观点、时间周期和最大可承受亏损。我将在 Qveris 策略和风险规则范围内为您提供建议。'
-    : 'Tell me your market view, time horizon, and maximum loss. I will stay within Qveris strategy and risk limits.'
+    ? '你好，我是 Qveris AI。告诉我你对标的的看法，比如「MU 一个月内小幅上涨，最多亏 1000 美元」，我会基于实时期权链筛选策略并解释盈亏和风险；也可以直接问期权概念。'
+    : 'Hi, I am Qveris AI. Tell me your view, e.g. "MU up modestly within a month, max loss $1,000", and I will screen strategies on the live chain and explain payoff and risk. You can also ask about options concepts.'
 }
 
-function renderAssistantAnswer(answer: AssistantChatResponse, lang: 'en' | 'zh') {
-  return [
-    answer.title,
-    answer.answer,
-    ...(answer.sections ?? []).map((section) => `${section.title}\n${section.body}`),
-    answer.followUpQuestion,
-    ...(answer.warnings ?? []).slice(0, 2).map((warning) => `${lang === 'zh' ? '风险提示' : 'Warning'}\n${warning}`),
-  ].filter(Boolean).join('\n\n')
+function plainText(answer: AssistantChatResponse) {
+  return [answer.answer, answer.followUpQuestion].filter(Boolean).join('\n')
+}
+
+function AssistantAnswer({
+  answer,
+  lang,
+  selectedStrategyId,
+  onSelectStrategy,
+}: {
+  answer: AssistantChatResponse
+  lang: 'en' | 'zh'
+  selectedStrategyId?: string
+  onSelectStrategy?: (id: string) => void
+}) {
+  return (
+    <div className="assistant assistant-answer">
+      {answer.answer ? <p>{answer.answer}</p> : null}
+      {(answer.sections ?? []).map((section) => (
+        <div className="assistant-card" key={`${section.strategyId ?? ''}-${section.title}`}>
+          <div className="assistant-card-head">
+            <strong>{section.title}</strong>
+            {section.strategyId && onSelectStrategy ? (
+              <button
+                type="button"
+                className={section.strategyId === selectedStrategyId ? 'active' : ''}
+                onClick={() => onSelectStrategy(section.strategyId!)}
+              >
+                {section.strategyId === selectedStrategyId
+                  ? (lang === 'zh' ? '已选中' : 'Selected')
+                  : (lang === 'zh' ? '在图表中查看' : 'View on chart')}
+              </button>
+            ) : null}
+          </div>
+          <p>{section.body}</p>
+        </div>
+      ))}
+      {answer.followUpQuestion ? <p className="assistant-follow-up">{answer.followUpQuestion}</p> : null}
+      {(answer.warnings ?? []).slice(0, 2).map((warning) => (
+        <p className="assistant-warning" key={warning}>{warning}</p>
+      ))}
+    </div>
+  )
 }
 
 export function AssistantBot({
@@ -58,6 +97,9 @@ export function AssistantBot({
   selectedStrategy,
   strategies,
   onStructuredUpdates,
+  onSelectStrategy,
+  onContractAdjustment,
+  profileApplied = false,
 }: {
   ticker: string
   parsedView: ParsedView
@@ -66,6 +108,9 @@ export function AssistantBot({
   selectedStrategy?: StrategyCandidate
   strategies: StrategyCandidate[]
   onStructuredUpdates?: (updates: AssistantStructuredUpdates) => void
+  onSelectStrategy?: (id: string) => void
+  onContractAdjustment?: (adjustment: AssistantContractAdjustment) => void
+  profileApplied?: boolean
 }) {
   const { lang } = useT()
   const [open, setOpen] = useState(false)
@@ -77,6 +122,19 @@ export function AssistantBot({
       content: intro(lang),
     },
   ])
+
+  const agentState = useRef<AssistantAgentState | undefined>(undefined)
+  const messagesEnd = useRef<HTMLDivElement>(null)
+
+  // Conversation memory belongs to one ticker; switching tickers on the page starts fresh.
+  useEffect(() => {
+    const remembered = agentState.current?.profile?.ticker
+    if (remembered && remembered !== ticker) agentState.current = undefined
+  }, [ticker])
+
+  useEffect(() => {
+    messagesEnd.current?.scrollIntoView({ block: 'end' })
+  }, [messages, loading])
 
   useEffect(() => {
     setMessages((current) => current.length === 1 && current[0].role === 'assistant'
@@ -96,7 +154,8 @@ export function AssistantBot({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           userMessage,
-          history: messages.slice(-8),
+          history: messages.slice(-8).map(({ role, content }) => ({ role, content })),
+          agentState: agentState.current,
           language: lang,
           mode: 'chat',
           marketContext: buildAssistantContext({
@@ -106,13 +165,16 @@ export function AssistantBot({
             options,
             selectedStrategy,
             strategies,
+            profileApplied,
           }),
         }),
       })
       const body = await response.json()
       const answer = (response.ok ? body : fallbackAssistantResponse(body.error || 'Qveris AI is unavailable.')) as AssistantChatResponse
+      if (response.ok && answer.agentState) agentState.current = answer.agentState
       const updates = normalizeAssistantUpdates(answer.structuredUpdates)
       if (Object.keys(updates).length) onStructuredUpdates?.(updates)
+      if (response.ok && answer.contractAdjustment) onContractAdjustment?.(answer.contractAdjustment)
       if (response.ok) {
         recordProductEvent({
           eventName: 'assistant_used',
@@ -126,7 +188,7 @@ export function AssistantBot({
       }
       setMessages((current) => [
         ...current,
-        { role: 'assistant', content: renderAssistantAnswer(answer, lang) },
+        { role: 'assistant', content: plainText(answer), response: answer },
       ])
     } catch (error) {
       const answer = fallbackAssistantResponse(error instanceof Error ? error.message : 'Qveris AI is unavailable.')
@@ -158,9 +220,20 @@ export function AssistantBot({
           </div>
           <div className="assistant-messages">
             {messages.map((message, index) => (
-              <p className={message.role} key={`${message.role}-${index}`}>{message.content}</p>
+              message.response ? (
+                <AssistantAnswer
+                  answer={message.response}
+                  key={`${message.role}-${index}`}
+                  lang={lang}
+                  onSelectStrategy={onSelectStrategy}
+                  selectedStrategyId={selectedStrategy?.id}
+                />
+              ) : (
+                <p className={message.role} key={`${message.role}-${index}`}>{message.content}</p>
+              )
             ))}
-            {loading ? <p className="assistant"><Loader2 size={14} /> {lang === 'zh' ? '正在按 Qveris 边界分析…' : 'Thinking within Qveris limits...'}</p> : null}
+            {loading ? <p className="assistant"><Loader2 size={14} /> {lang === 'zh' ? '正在读取实时期权链并分析…' : 'Reading the live chain and analyzing...'}</p> : null}
+            <div ref={messagesEnd} />
           </div>
           <form
             className="assistant-input"

@@ -127,11 +127,13 @@ function TradeCostSheet({ strategy, ticker, lang }: { strategy: StrategyCandidat
 
 function LegEditor({
   strategy,
+  current,
   optionChain,
   parsedView,
   onAdjusted,
 }: {
   strategy: StrategyCandidate
+  current: StrategyCandidate
   optionChain: QverisOptionsResponse
   parsedView: ParsedView
   onAdjusted: (s: StrategyCandidate) => void
@@ -141,7 +143,7 @@ function LegEditor({
 
   // local copy of adjustments, indexed by legIndex
   const [local, setLocal] = useState<StrategyLegAdjustment[]>(() =>
-    strategy.legs.map((leg, i) => ({ legIndex: i, expiration: leg.expiration, strike: leg.strike, quantity: leg.quantity ?? 1 }))
+    current.legs.map((leg, i) => ({ legIndex: i, expiration: leg.expiration, strike: leg.strike, quantity: leg.quantity ?? 1 }))
   )
   const [errors, setErrors] = useState<string[]>([])
 
@@ -233,6 +235,7 @@ function LegEditor({
 
 export function StrategyCard({
   strategy,
+  adjusted,
   selected,
   onSelect,
   underlyingPrice,
@@ -244,6 +247,8 @@ export function StrategyCard({
   parsedView,
 }: {
   strategy: StrategyCandidate
+  /** Page-level override (manual edit or chat contract edit); wins over the card's local copy. */
+  adjusted?: StrategyCandidate
   selected?: boolean
   onSelect?: (strategy: StrategyCandidate) => void
   underlyingPrice?: number
@@ -261,7 +266,7 @@ export function StrategyCard({
   const [activeTab, setActiveTab] = useState<CardTab>('overview')
   // null = no user adjustment yet → always use latest strategy prop
   const [adjustedStrategy, setAdjustedStrategy] = useState<StrategyCandidate | null>(null)
-  const displayStrategy = adjustedStrategy ?? strategy
+  const displayStrategy = adjusted ?? adjustedStrategy ?? strategy
 
   const canAdjust = !!optionChain && !!parsedView && optionChain.status === 'available' && strategy.legs.length > 0
 
@@ -417,7 +422,9 @@ export function StrategyCard({
           )}
           {activeTab === 'adjust' && canAdjust && (
             <LegEditor
+              key={displayStrategy.legs.map((leg) => `${leg.expiration}:${leg.strike}:${leg.quantity ?? 1}`).join('|')}
               strategy={strategy}
+              current={displayStrategy}
               optionChain={optionChain!}
               parsedView={parsedView!}
               onAdjusted={(next) => {

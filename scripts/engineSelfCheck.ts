@@ -10,7 +10,7 @@ import { buildGreeksQuadChart } from '../src/core/greeksChartEngine.ts'
 import { adjustStrategyLegs } from '../src/core/strategyAdjustmentEngine.ts'
 import { probabilityOfProfit, recommendStrategyTypes } from '../src/core/strategyRecommendationEngine.ts'
 import { optionExpirations } from '../src/core/dashboardData.ts'
-import { buildAssistantPlan, enforceAgentResponse } from '../server/assistantAgent.mjs'
+import { buildAssistantPlan, guardAssistantText, parseAssistantTurn } from '../server/assistantAgent.mjs'
 import type { QverisOptionContract, QverisOptionsResponse } from '../src/types/optionTypes.ts'
 import type { ParsedView, StrategyCandidate, StrategyLeg } from '../src/types/strategyTypes.ts'
 
@@ -338,109 +338,40 @@ assert.ok(
 )
 assert.ok(highIvBullish.find((item) => item.id === 'long-call')?.rankWarnings?.some((warning) => warning.includes('High IV')))
 
-const agentClarify = buildAssistantPlan({
-  userMessage: 'Find the best strategy.',
-  marketContext: { parsedView: view, strategies: budgetRanked, dataGaps: [] },
-})
-assert.equal(agentClarify.directResponse?.intent, 'clarify')
-assert.ok(agentClarify.directResponse?.followUpQuestion)
-
+// Agent plans are built from real engine candidates and never invent numbers.
+const agentProfile = { ticker: 'TST', direction: 'bullish', horizon: '1 month', riskBudget: 1000 }
 const agentRecommend = buildAssistantPlan({
-  userMessage: 'Find the best strategy with $1000 risk.',
-  marketContext: { parsedView: { ...view, risk_budget: 1000 }, strategies: budgetRanked, dataGaps: [] },
+  intent: 'recommend',
+  message: 'Find the best strategy with $1000 risk.',
+  profile: agentProfile,
+  context: { strategies: budgetRanked, dataGaps: [] },
 })
-assert.equal(agentRecommend.directResponse, undefined)
-assert.ok(agentRecommend.topStrategies?.length)
-assert.ok(agentRecommend.topStrategies?.[0]?.rankDetails?.length)
-assert.ok(agentRecommend.topStrategies?.[0]?.playbook?.entryChecklist.length)
-
+assert.equal(agentRecommend.mode, 'recommend')
+assert.ok(agentRecommend.strategies.length)
+assert.ok(agentRecommend.strategies.every((item: { fitsRiskBudget?: boolean }) => item.fitsRiskBudget))
+assert.equal(agentRecommend.cards.length, agentRecommend.strategies.length)
+assert.ok(agentRecommend.cards.every((card: { body: string }) => card.body.includes('Max loss')))
 const agentBudgetBlock = buildAssistantPlan({
-  userMessage: 'Explain selected with $100 risk.',
-  marketContext: {
-    parsedView: { ...view, risk_budget: 100 },
-    selectedStrategy: { ...budgetRanked[0], maxLoss: 500 },
-    strategies: budgetRanked,
-    dataGaps: [],
-  },
+  intent: 'risk_check',
+  message: 'Does the selected strategy fit $100 risk?',
+  profile: { ...agentProfile, riskBudget: 100 },
+  context: { selectedStrategy: { ...budgetRanked[0], maxLoss: 500 }, strategies: budgetRanked, dataGaps: [] },
 })
-assert.equal(agentBudgetBlock.directResponse?.intent, 'refuse')
-assert.equal(
-  buildAssistantPlan({
-    userMessage: 'Explain selected with $1000 risk.',
-    marketContext: {
-      parsedView: { ...view, risk_budget: 1000 },
-      selectedStrategy: { ...budgetRanked[0], maxLoss: 'unlimited' },
-      strategies: budgetRanked,
-      dataGaps: [],
-    },
-  }).directResponse?.intent,
-  'refuse',
-)
-assert.equal(
-  buildAssistantPlan({
-    userMessage: '500',
-    history: [{ role: 'assistant', content: 'What is the most you are willing to lose on this paper trade?' }],
-    marketContext: { parsedView: view, strategies: budgetRanked, dataGaps: [] },
-  }).structuredUpdates.riskBudget,
-  500,
-)
-assert.equal(
-  buildAssistantPlan({
-    userMessage: '120',
-    history: [{ role: 'assistant', content: 'What target price are you thinking near expiration?' }],
-    marketContext: { parsedView: view, strategies: budgetRanked, dataGaps: [] },
-  }).structuredUpdates.targetPrice,
-  120,
-)
-assert.equal(
-  buildAssistantPlan({
-    userMessage: 'yes',
-    history: [{ role: 'assistant', content: 'Are you willing to be assigned?' }],
-    marketContext: { parsedView: view, strategies: budgetRanked, dataGaps: [] },
-  }).structuredUpdates.willingToBeAssigned,
-  true,
-)
-const invalidBudgetPlan = buildAssistantPlan({
-  userMessage: 'risk $0',
-  marketContext: { parsedView: view, strategies: budgetRanked, dataGaps: [] },
+assert.match(agentBudgetBlock.verdict, /above your \$100 risk budget/)
+const agentUnlimited = buildAssistantPlan({
+  intent: 'risk_check',
+  message: 'Is it within budget?',
+  profile: agentProfile,
+  context: { selectedStrategy: { ...budgetRanked[0], maxLoss: 'unlimited' }, strategies: budgetRanked, dataGaps: [] },
 })
-assert.equal(invalidBudgetPlan.directResponse?.intent, 'clarify')
-assert.ok(!Object.hasOwn(invalidBudgetPlan.directResponse?.structuredUpdates ?? {}, 'riskBudget'))
-assert.equal(
-  buildAssistantPlan({
-    userMessage: 'Can we move the DTE farther and choose another strike?',
-    marketContext: { parsedView: { ...view, risk_budget: 1000 }, strategies: budgetRanked, dataGaps: [] },
-  }).toolPlan?.[0],
-  'adjust_strategy_params',
-)
-const guardedAgent = enforceAgentResponse(
-  { intent: 'recommend', answer: 'This is guaranteed and risk-free. You should buy it.', referencedStrategyIds: [], warnings: [], dataGaps: [] },
-  { parsedView: { ...view, risk_budget: 1000 } },
-  {},
-)
+assert.match(agentUnlimited.verdict, /uncapped/)
+assert.equal(parseAssistantTurn('500', { pending: { intent: 'recommend', field: 'riskBudget' } }).patch.riskBudget, 500)
+assert.equal(parseAssistantTurn('120', { pending: { intent: 'recommend', field: 'targetPrice' } }).patch.targetPrice, 120)
+assert.equal(parseAssistantTurn('yes', { pending: { intent: 'recommend', field: 'acceptsAssignment' } }).patch.acceptsAssignment, true)
+assert.equal(parseAssistantTurn('Can we move the DTE farther and choose another strike?').intent, 'adjust')
+const guardedAgent = guardAssistantText('This is guaranteed and risk-free. You should buy it.')
 assert.ok(guardedAgent.warnings.length)
 assert.ok(!/guaranteed|risk-free|should buy/i.test(guardedAgent.answer))
-assert.ok(!/should buy/i.test(enforceAgentResponse(
-  { intent: 'explain', answer: 'ok', sections: [{ title: 'Risk', body: 'You should buy it.' }], referencedStrategyIds: [], warnings: [], dataGaps: [] },
-  {},
-  {},
-).sections[0].body))
-assert.deepEqual(
-  enforceAgentResponse(
-    { intent: 'recommend', answer: 'ok', structuredUpdates: { riskBudget: 999999, direction: 'volatile' }, referencedStrategyIds: [], warnings: [], dataGaps: [] },
-    {},
-    { structuredUpdates: { riskBudget: 500 }, referencedStrategyIds: [] },
-  ).structuredUpdates,
-  { riskBudget: 500 },
-)
-assert.deepEqual(
-  enforceAgentResponse(
-    { intent: 'recommend', answer: 'ok', referencedStrategyIds: ['bad-id', 'bull-call-spread'], warnings: [], dataGaps: [] },
-    {},
-    { referencedStrategyIds: ['bull-call-spread'] },
-  ).referencedStrategyIds,
-  ['bull-call-spread'],
-)
 
 const highSpotFixture: QverisOptionsResponse = {
   ticker: 'TST',

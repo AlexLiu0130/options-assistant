@@ -7,6 +7,7 @@ function horizonBand(horizon: string): [number, number, string] {
     return [21, 45, 'Two-to-four-week horizon.']
   }
   if (text.includes('week')) return [14, 30, 'Weekly horizon.']
+  if (text.includes('2 month')) return [45, 90, 'Two-month horizon.']
   if (text.includes('3 month') || text.includes('quarter')) return [60, 120, 'Medium-term horizon.']
   if (text.includes('6') || text.includes('year') || text.includes('long')) return [180, 365, 'Longer-term horizon.']
   if (text.includes('1 month') || text.includes('month')) return [30, 60, 'One-month horizon.']

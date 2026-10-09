@@ -93,46 +93,26 @@ export function normalizeExtraction(payload, fallback = {}) {
   }
 }
 
-export function buildExtractionPrompt({ userMessage, history = [], currentProfile = {}, language = 'en' }) {
+export function buildExtractionPrompt({ userMessage, history = [], currentProfile = {}, pendingField, language = 'en' }) {
   return {
     instruction: [
       'Return JSON only with schema {intent, profilePatch, requestedAdjustment, ambiguousFields, confidence}.',
       'Intent must be clarify, recommend, explain, compare, educate, adjust, risk_check, or refuse.',
-      'Extract only facts explicitly stated or clearly confirmed by the user.',
+      'Use clarify only for greetings or messages with no options task; questions about a strategy are explain, concept questions are educate.',
+      'Extract only facts explicitly stated or clearly confirmed by the user in userMessage; never copy values from currentProfile.',
       'profilePatch may contain ticker, direction, strength, horizon, targetPrice, riskBudget, experienceLevel, ownsShares, sharesCount, acceptsAssignment, eventContext.',
       'Direction must be bullish, bearish, neutral, or volatile. Strength must be mild, moderate, or strong.',
+      'Horizon must be one of 1 week, 2 weeks, 1 month, 2 months, 3 months, 6 months, 1 year.',
       'Experience level must be beginner, intermediate, or advanced.',
+      pendingField ? `The assistant just asked the user for ${pendingField}; a bare value answers that field.` : '',
       'Do not recommend a strategy, select contracts, or calculate financial values.',
       'Leave uncertain fields absent and list them in ambiguousFields.',
       language === 'zh' ? 'Interpret the user message in Simplified Chinese.' : 'Interpret the user message in English.',
-    ].join(' '),
+    ].filter(Boolean).join(' '),
     userMessage,
     history: history.slice(-8),
     currentProfile: normalizeAgentProfile(currentProfile),
   }
-}
-
-const requiredByIntent = {
-  recommend: ['ticker', 'direction', 'horizon', 'riskBudget', 'experienceLevel'],
-  compare: ['ticker', 'direction', 'horizon', 'riskBudget', 'experienceLevel'],
-  adjust: ['ticker', 'direction', 'horizon', 'riskBudget', 'experienceLevel'],
-  risk_check: ['ticker', 'direction', 'horizon', 'riskBudget', 'experienceLevel'],
-  explain: ['ticker'],
-}
-
-export function nextRequiredProfileField(intent, profile) {
-  return (requiredByIntent[intent] ?? []).find((field) => profile[field] === undefined)
-}
-
-export function profileQuestion(field, isZh = false) {
-  const questions = {
-    ticker: ['您想分析哪个美股 ticker？', 'Which US ticker do you want to analyze?'],
-    direction: ['您对标的更偏看多、看空、中性还是波动？', 'Is your view bullish, bearish, neutral, or volatility-focused?'],
-    horizon: ['您希望分析的大致周期是多久？', 'What time horizon do you want to analyze?'],
-    riskBudget: ['这笔模拟交易最多愿意亏损多少美元？', 'What is the most you are willing to lose on this paper trade?'],
-    experienceLevel: ['您的期权经验是新手、进阶还是高级？', 'What is your options experience level: beginner, intermediate, or advanced?'],
-  }
-  return questions[field]?.[isZh ? 0 : 1]
 }
 
 export function parsedViewInput(profile, currentPrice) {
@@ -152,33 +132,61 @@ export function parsedViewInput(profile, currentPrice) {
   }
 }
 
-export function buildExplanationPrompt({ userMessage, history, profile, plan, marketContext, language = 'en' }) {
+const modeGuides = {
+  recommend: 'Summarize why the top candidate fits the stated view, horizon and budget, then contrast it in one or two sentences with the other candidates (cost, risk shape, probability). Mention assumptions the user has not confirmed.',
+  compare: 'Compare the candidates on cost, max loss, max profit, probability of profit and what market path each needs. Say which profile each suits instead of declaring one the trade to make.',
+  adjust: 'Explain what changed after the adjustment (horizon, budget or view) and how the candidates differ from before.',
+  explain: 'Explain the focus strategy: how it makes and loses money, what the supplied strikes and expiration imply, breakeven, the main risk, and how it would typically be managed.',
+  risk_check: 'Start from agentPlan.verdict, then explain where the max loss comes from and the risks that are not captured by max loss (assignment, liquidity, IV change, early exit).',
+  no_fit: 'Explain that nothing fits the risk budget, name the lowest-risk candidate and its max loss from agentPlan.cheapest, and give concrete non-advisory ways to proceed (larger budget, cheaper underlying, different view or horizon).',
+  education_only: 'The live option chain is unavailable. Teach the strategy types supplied, without inventing contracts or prices.',
+  educate: 'Teach the concept or strategy in agentPlan.concept or agentPlan.education in plain language, then connect it to the current ticker and focus strategy when supplied.',
+  chat: 'Answer the question directly using agentPlan.market and agentPlan.focus when relevant, then offer what you can do next.',
+  contract_adjust: 'The user edited contracts of agentPlan.focus. State each entry of agentPlan.legChanges (strike, expiration or quantity from -> to), then compare agentPlan.before and agentPlan.after: cost, max loss, max profit, breakeven, probability of profit and net Greeks. For the trade-off, use ONLY agentPlan.changeDirections (higher/lower/unchanged) and agentPlan.before/after.maxProfitZone (price where max profit starts; null = unbounded): e.g. say max profit now needs the price at or above maxProfitZone.from. Do not claim a profit zone got wider/narrower, or that the position got more/less leveraged or sensitive, unless those facts directly say so. If agentPlan.requestedExpiration is present, say the closest listed expiration was used. If agentPlan.budgetProblem is present, state it.',
+}
+
+// Situation-specific rules are only sent when they apply; an always-present "if X" rule gets applied anyway.
+function situationGuides(plan) {
+  return [
+    plan.forecastQuestion
+      ? 'The user asked whether the price will rise or fall. State clearly that you cannot predict price direction; you may quote agentPlan.expectedMove as the market-implied range from IV (not a forecast), then ask for the user\'s own view.'
+      : 'Do not talk about predicting prices unless the user asked.',
+    plan.alternativesOnly ? 'The user asked for other options: present only the supplied candidates, which they have not seen yet.' : '',
+    plan.offCandidates === true ? 'The named strategy does not fit the current view or live screen: explain it from agentPlan.education only, say so plainly, and never substitute another strategy.' : '',
+    Array.isArray(plan.offCandidates) && plan.offCandidates.length ? 'Strategies in agentPlan.offCandidates have no live contracts for this view: describe them only from their education facts and say so.' : '',
+    plan.scenario ? 'The user asked a what-if price question. Lead with agentPlan.scenario: the P/L at expiration if the stock ends at that price. It is a scenario, not a forecast and not the user\'s target.' : '',
+  ].filter(Boolean)
+}
+
+export function buildExplanationPrompt({ userMessage, history = [], plan, language = 'en', tools = false }) {
   return {
     instruction: [
-      'Return JSON only.',
-      'Schema: {intent, title, answer, sections, followUpQuestion, referencedStrategyIds, warnings, dataGaps}.',
-      'Explain only the deterministic candidates in agentPlan.topStrategies.',
-      'referencedStrategyIds must be a subset of agentPlan.referencedStrategyIds.',
-      'Copy prices, strikes, expirations, probabilities, fees, P/L and DTE exactly; never calculate or invent a number.',
-      'Never add, remove, reverse, resize, or replace a strategy leg.',
-      'Explain why supplied DTE and strikes fit the profile, the main trade-off, and the most important risk.',
-      'Clearly distinguish expiration payoff from pre-expiration theoretical value.',
-      'If dataGaps are present, state the limitation and keep the explanation conditional.',
-      'Ask at most one follow-up question.',
-      'Do not use Markdown, bullets, asterisks, leading colons, personalized investment advice, or guaranteed-return language.',
+      'You are the narrator of an options research and paper-trading assistant. Return JSON only with schema {answer, followUpQuestion}.',
+      `Mode ${plan.mode}: ${modeGuides[plan.mode] ?? modeGuides.chat}`,
+      ...situationGuides(plan),
+      'Strategy contract details (legs, max loss, max profit, breakeven, POP) are shown to the user separately as cards, so do not list legs; refer to strategies by name and quote at most the two or three numbers that matter.',
+      'Never mention agentPlan field names (such as estimatedPl or maxLoss); say "estimated P/L", "max loss" in plain words. Write volatility as a percent.',
+      tools
+        ? 'If the user asks for something agentPlan does not contain (another strike or expiration quote, IV term structure, expected move, P/L at other prices, price history, Greeks), call the Qveris data tools first. Use only numbers present in agentPlan, in the user message, or returned by a tool; never calculate, round differently, or invent a price, strike, probability, P/L or date. Tools are read-only and never change the plan or the strategy.'
+        : 'Use only numbers present in agentPlan; never calculate, round differently, or invent a price, strike, probability, P/L or date.',
+      'probabilityOfProfitPercent is already a percent. maxLoss and maxProfit are dollars per position. netDebitCreditPerSharePerSet is per share for ONE set of the legs; with sets > 1 the position pays/receives positionNetDebitCreditTotal dollars in total. Never call the position total a per-share figure.',
+      'Never tell the user to buy or sell, never promise returns. Frame everything as scenario analysis for paper trading.',
+      'Mention agentPlan.dataNotes only in education_only mode or when the user asks about data quality.',
+      'If agentPlan.changed is present, open by stating each change exactly as given (from -> to for an edit; for a newlySet entry just state the value the user gave, without any "from" wording); never describe a change the plan does not list.',
+      'Never ask a question inside answer; any question belongs in followUpQuestion only.',
+      'answer: 2 to 5 short sentences, plain text, no Markdown, no bullets. The first sentence must carry the main conclusion on its own.',
+      plan.followUpText
+        ? `followUpQuestion: ask essentially this, in the response language: ${plan.followUpText}`
+        : plan.followUpField
+        ? `followUpQuestion: ask the user one natural question to learn their ${plan.followUpField}, explaining briefly how it would refine the result.`
+        : 'followUpQuestion: one short optional suggestion of what the user could ask next, or empty string.',
       language === 'zh'
-        ? 'All prose must be concise Simplified Chinese except tickers, Greeks, and standard abbreviations.'
-        : 'All prose must be concise English.',
+        ? 'Write in concise Simplified Chinese; keep tickers, Greeks and standard abbreviations in English.'
+        : 'Write in concise English.',
     ].join(' '),
     userMessage,
-    history: history.slice(-8),
-    profile: normalizeAgentProfile(profile),
+    history: history.slice(-6),
     agentPlan: plan,
-    market: marketContext.market,
-    optionChainStatus: marketContext.options?.status,
-    snapshotId: marketContext.snapshotId,
-    generatedAt: marketContext.generatedAt,
-    dataGaps: marketContext.dataGaps ?? [],
   }
 }
 
@@ -193,9 +201,36 @@ function collectNumbers(value, numbers = new Set()) {
   return numbers
 }
 
+const financialNumberPattern = new RegExp([
+  /\$\s*([0-9][0-9,]*(?:\.\d+)?)/.source,
+  /([0-9]+(?:\.\d+)?)\s*%/.source,
+  /([0-9]+)\s*DTE/.source,
+  /([0-9][0-9,]*(?:\.\d+)?)\s*(?:美元|美金|dollars?\b|usd\b)/.source,
+  // Strikes and price levels written without a currency sign: "1100 Call", "行权价 1100", "breakeven 1,112.5".
+  /(?<![\d-])([0-9][0-9,]*(?:\.\d+)?)\s*(?:call|put|c\b|p\b|看涨|看跌)/.source,
+  /(?:行权价|执行价|盈亏平衡点?|保本点|strike|breakeven|break-even)\s*(?:price)?\s*(?:为|是|在|约|:|：|at|of|=)?\s*\$?\s*([0-9][0-9,]*(?:\.\d+)?)/.source,
+].join('|'), 'gi')
+
 function financialNumbers(text) {
-  const matches = String(text).matchAll(/\$\s*([0-9][0-9,]*(?:\.\d+)?)|([0-9]+(?:\.\d+)?)\s*%|([0-9]+)\s*DTE/gi)
-  return [...matches].map((match) => Number(String(match[1] ?? match[2] ?? match[3]).replaceAll(',', '')))
+  return [...String(text).matchAll(financialNumberPattern)].map((match) => {
+    const index = match.slice(1).findIndex((group) => group !== undefined)
+    return { number: Number(String(match[index + 1]).replaceAll(',', '')), percent: index === 1 }
+  })
+}
+
+const roundings = [1, 10, 100]
+
+// The narrator may round a trusted value to 0-2 decimals (44.44 -> 44.4) and may show a fraction such as
+// IV 0.4734 as a percent (47.3%); anything else is unverified.
+function matchesTrusted({ number, percent }, allowed) {
+  const target = Math.abs(number)
+  return [...allowed].some((raw) => {
+    // Losses are stored negative but written as "亏 $320"; compare magnitudes.
+    const value = Math.abs(raw)
+    const forms = percent && value < 5 ? [value, value * 100] : [value]
+    return forms.some((form) => Math.abs(form - target) < 0.0001
+      || (form >= 1 && roundings.some((scale) => Math.round(form * scale) / scale === target)))
+  })
 }
 
 export function unknownFinancialNumbers(payload, trustedContext) {
@@ -206,5 +241,5 @@ export function unknownFinancialNumbers(payload, trustedContext) {
     payload?.followUpQuestion,
     ...(Array.isArray(payload?.sections) ? payload.sections.flatMap((section) => [section?.title, section?.body]) : []),
   ].filter(Boolean).join(' ')
-  return financialNumbers(prose).filter((number) => ![...allowed].some((allowedNumber) => Math.abs(allowedNumber - number) < 0.0001))
+  return financialNumbers(prose).filter((item) => !matchesTrusted(item, allowed)).map((item) => item.number)
 }

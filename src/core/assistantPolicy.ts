@@ -21,12 +21,35 @@ export type AssistantChatResponse = {
   intent: AssistantIntent
   title?: string
   answer: string
-  sections?: Array<{ title: string; body: string }>
+  sections?: Array<{ title: string; body: string; strategyId?: string }>
   followUpQuestion?: string
   structuredUpdates?: AssistantStructuredUpdates
   referencedStrategyIds: string[]
   warnings: string[]
   dataGaps: string[]
+  mode?: string
+  assumptions?: string[]
+  /** Opaque conversation memory owned by the server; echo it back on the next turn. */
+  agentState?: AssistantAgentState
+  /** Contract edit made in chat: absolute leg values for the page to re-price with the same engine. */
+  contractAdjustment?: AssistantContractAdjustment
+  toolCalls?: string[]
+}
+
+export type AssistantContractAdjustment = {
+  strategyId: string
+  adjustments: Array<{ legIndex: number; strike?: number; expiration?: string; quantity?: number }>
+}
+
+export type AssistantAgentState = {
+  profile?: Record<string, unknown>
+  pending?: { intent: AssistantIntent; field?: string; confirm?: Record<string, unknown> }
+  asked?: string[]
+  lastIntent?: AssistantIntent
+  lastReferencedIds?: string[]
+  focusStrategyId?: string
+  clientSelectedId?: string
+  contractOverrides?: Record<string, AssistantContractAdjustment['adjustments']>
 }
 
 function stringUpdate(value: unknown) {
@@ -75,6 +98,7 @@ export function buildAssistantContext({
   options,
   selectedStrategy,
   strategies,
+  profileApplied = false,
 }: {
   ticker: string
   parsedView: ParsedView
@@ -82,10 +106,13 @@ export function buildAssistantContext({
   options?: QverisOptionsResponse
   selectedStrategy?: StrategyCandidate
   strategies: StrategyCandidate[]
+  /** The user submitted the profile form, so its values are their answers rather than page defaults. */
+  profileApplied?: boolean
 }) {
   return {
     ticker,
     parsedView,
+    confirmedFields: profileApplied ? ['direction', 'horizon', 'riskBudget', 'targetPrice', 'experienceLevel', 'acceptsAssignment'] : [],
     market: market
       ? {
           price: market.price,

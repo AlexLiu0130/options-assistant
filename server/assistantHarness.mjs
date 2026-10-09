@@ -155,6 +155,8 @@ function situationGuides(plan) {
     plan.offCandidates === true ? 'The named strategy does not fit the current view or live screen: explain it from agentPlan.education only, say so plainly, and never substitute another strategy.' : '',
     Array.isArray(plan.offCandidates) && plan.offCandidates.length ? 'Strategies in agentPlan.offCandidates have no live contracts for this view: describe them only from their education facts and say so.' : '',
     plan.scenario ? 'The user asked a what-if price question. Lead with agentPlan.scenario: the P/L at expiration if the stock ends at that price. It is a scenario, not a forecast and not the user\'s target.' : '',
+    plan.whatIf ? 'The user asked a what-if question about price, time and/or implied volatility. Lead with agentPlan.whatIf: changeFromNow is the model change in position value from today, plVsEntry is the P/L versus the entry cost. Say it is a Black-Scholes model estimate, not a quote or a forecast. If ivAssumed is true, say the IV change size was assumed.' : '',
+    plan.focus?.sensitivity ? 'Effects of IV, time and price on the position are in agentPlan.focus.sensitivity: effects says whether each move helps or hurts, and the numbers are model P/L changes from today (IV ±5 points, 7 days passing, stock ±5%). Any statement that IV, time decay or a price move helps or hurts must follow effects and cite those numbers; never infer the direction from Greeks or intuition. For a single leg, use ivDown5ByLeg (positive = that leg adds value to the position). Leg delta/theta/vega values are per long contract; a sold leg affects the position with the opposite sign, so never say a sold leg\'s theta or vega works against the position just because its raw value is negative—use netGreeks or the sensitivity numbers for the position. For other sizes of change, call the what_if tool.' : '',
   ].filter(Boolean)
 }
 
@@ -167,7 +169,7 @@ export function buildExplanationPrompt({ userMessage, history = [], plan, langua
       'Strategy contract details (legs, max loss, max profit, breakeven, POP) are shown to the user separately as cards, so do not list legs; refer to strategies by name and quote at most the two or three numbers that matter.',
       'Never mention agentPlan field names (such as estimatedPl or maxLoss); say "estimated P/L", "max loss" in plain words. Write volatility as a percent.',
       tools
-        ? 'If the user asks for something agentPlan does not contain (another strike or expiration quote, IV term structure, expected move, P/L at other prices, price history, Greeks), call the Qveris data tools first. Use only numbers present in agentPlan, in the user message, or returned by a tool; never calculate, round differently, or invent a price, strike, probability, P/L or date. Tools are read-only and never change the plan or the strategy.'
+        ? 'If the user asks for something agentPlan does not contain (another strike or expiration quote, IV term structure, expected move, P/L at other prices, P/L before expiration or after an IV change, price history, Greeks), call the Qveris data tools first. Use only numbers present in agentPlan, in the user message, or returned by a tool; never calculate, round differently, or invent a price, strike, probability, P/L or date. Tools are read-only and never change the plan or the strategy.'
         : 'Use only numbers present in agentPlan; never calculate, round differently, or invent a price, strike, probability, P/L or date.',
       'probabilityOfProfitPercent is already a percent. maxLoss and maxProfit are dollars per position. netDebitCreditPerSharePerSet is per share for ONE set of the legs; with sets > 1 the position pays/receives positionNetDebitCreditTotal dollars in total. Never call the position total a per-share figure.',
       'Never tell the user to buy or sell, never promise returns. Frame everything as scenario analysis for paper trading.',
@@ -181,7 +183,7 @@ export function buildExplanationPrompt({ userMessage, history = [], plan, langua
         ? `followUpQuestion: ask the user one natural question to learn their ${plan.followUpField}, explaining briefly how it would refine the result.`
         : 'followUpQuestion: one short optional suggestion of what the user could ask next, or empty string.',
       language === 'zh'
-        ? 'Write in concise Simplified Chinese; keep tickers, Greeks and standard abbreviations in English.'
+        ? 'Write in concise Simplified Chinese; keep tickers, Greeks, IV, Call/Put and standard abbreviations in English, but translate every other English word (for example playbook, setup, upside, downside) into Chinese.'
         : 'Write in concise English.',
     ].join(' '),
     userMessage,
@@ -209,6 +211,8 @@ const financialNumberPattern = new RegExp([
   // Strikes and price levels written without a currency sign: "1100 Call", "行权价 1100", "breakeven 1,112.5".
   /(?<![\d-])([0-9][0-9,]*(?:\.\d+)?)\s*(?:call|put|c\b|p\b|看涨|看跌)/.source,
   /(?:行权价|执行价|盈亏平衡点?|保本点|strike|breakeven|break-even)\s*(?:price)?\s*(?:为|是|在|约|:|：|at|of|=)?\s*\$?\s*([0-9][0-9,]*(?:\.\d+)?)/.source,
+  // Stock price levels in what-if prose: "涨到约 253.53", "股价在 240", "rises to 240".
+  /(?:涨到|跌到|升到|回到|落到|股价(?:在|为|是|约|达到)|(?:rises?|drops?|falls?|climbs?|goes) to|stock at)\s*(?:约|大约|about|around)?\s*\$?\s*([0-9][0-9,]*(?:\.\d+)?)(?![\d.,]*\s*(?:%|％|天|日|周|个|days?|weeks?))/.source,
 ].join('|'), 'gi')
 
 function financialNumbers(text) {

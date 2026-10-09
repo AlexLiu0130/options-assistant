@@ -2,6 +2,7 @@
 // The LLM only narrates; every number shown to the user comes from the deterministic engines here.
 import { strategyEducationContent } from '../src/core/strategyEducationContent.ts'
 import { strategyExpirationPayoff } from '../src/core/payoffEngine.ts'
+import { strategySensitivity, whatIfStrategy } from '../src/core/whatIfEngine.ts'
 
 export const assistantIntents = ['clarify', 'recommend', 'explain', 'compare', 'educate', 'adjust', 'risk_check', 'refuse']
 const engineIntents = new Set(['recommend', 'compare', 'adjust', 'explain', 'risk_check'])
@@ -439,7 +440,7 @@ export function classifyAssistantIntent(message, reference) {
   const value = String(message).toLowerCase()
   if (/什么是|是什么|什么叫|啥是|啥叫|是啥|定义|含义|概念|科普|what is|what's|what are|how does .+ work|meaning of|define|teach me|learn/.test(value)) return 'educate'
   if (/对比|比较|区别|差别|差异|哪个好|哪个更|哪一个|compare|versus|\bvs\.?\b|difference|better than/.test(value)) return 'compare'
-  if (/风险检查|风险预算|超预算|符合.*预算|预算.*(够|符合)|最多亏多少|会亏多少|亏多少|risk check|fit.*budget|within.*budget|how much can i lose|worst case/.test(value)) return 'risk_check'
+  if (/风险检查|风险预算(?:内|以内|之内|够|能|吗)|(?:超|超出|超过|符合|在).{0,4}风险预算|超预算|符合.*预算|预算.*(够|符合)|最多亏多少|会亏多少|亏多少|risk check|fit.*budget|within.*budget|how much can i lose|worst case/.test(value)) return 'risk_check'
   if (reference && /风险|亏|risk|lose|loss|安全|危险/.test(value)) return 'risk_check'
   if (/调整|换成|改成|改为|换到|换一个|换个|拉长|缩短|延长|更远|更近|再长|再短|再远|再近|长一点|短一点|长一些|短一些|行权价|到期日|adjust|switch to|change (?:the )?(?:strike|expiration|dte|budget|horizon)|(?:another|different|other) (?:strike|expiration)|move the (?:dte|strike|expiration)|longer|shorter|farther|further out|closer/.test(value)) return 'adjust'
   if (/解释|为什么|讲讲|讲一下|说说|说一下|分析一下|怎么理解|怎么赚钱|怎么亏|explain|why|walk me through|tell me about|break down/.test(value)) return 'explain'
@@ -699,6 +700,75 @@ export function hypotheticalPrice(message) {
   return number > 0 ? number : undefined
 }
 
+const ivWord = '(?:\\biv\\b|隐含波动率|隐波|波动率|implied vol(?:atility)?|\\bvol(?:atility)?\\b)'
+const ivDownWord = '(?:下降|降低|下跌|回落|降|跌|收缩|压缩|崩|crush(?:es|ed)?|drops?|falls?|declines?|goes down|comes down|down|lower)'
+const ivUpWord = '(?:上升|升高|上涨|飙升|走高|升|涨|扩张|rises?|jumps?|spikes?|goes up|increases?|up|higher)'
+const scenarioCount = '(\\d+(?:\\.\\d+)?|[一二两三四五六七八九十]{1,3})'
+
+// "IV 降 5 个点" -> -5, "IV crush" -> -5 (assumed size), "波动率上升 10%" -> +10 (read as vol points).
+export function hypotheticalIvShift(message) {
+  const value = String(message).toLowerCase()
+  const points = '\\s*(?:了)?\\s*(?:约|大约|about|by)?\\s*' + scenarioCount + '\\s*(?:个百分点|个点|点|%|％|vol points?|points?|pts?)?'
+  for (const [word, sign] of [[ivDownWord, -1], [ivUpWord, 1]]) {
+    const sized = value.match(new RegExp(`${ivWord}\\s*(?:如果|要是)?\\s*${word}${points}`))
+    if (sized) {
+      const size = countValue(sized[1])
+      if (size > 0 && size <= 60) return { ivShiftPoints: sign * size, assumed: false }
+    }
+  }
+  const down = new RegExp(`${ivWord}\\s*(?:如果|要是|再)?\\s*${ivDownWord}|iv crush|${ivDownWord}\\s*(?:的)?\\s*${ivWord}`).test(value)
+  const up = new RegExp(`${ivWord}\\s*(?:如果|要是|再)?\\s*${ivUpWord}|${ivUpWord}\\s*(?:的)?\\s*${ivWord}`).test(value)
+  if (down !== up) return { ivShiftPoints: down ? -5 : 5, assumed: true }
+  return undefined
+}
+
+// "两周后" / "过 10 天" / "in 3 weeks" -> calendar days forward inside a what-if.
+export function hypotheticalDaysForward(message) {
+  const value = String(message).toLowerCase()
+  const unitDays = (unit) => (/周|星期|week/.test(unit) ? 7 : /月|month/.test(unit) ? 30 : 1)
+  const zh = value.match(new RegExp(`(?:过|再过|等)?\\s*${scenarioCount}\\s*(?:个)?\\s*(天|日|周|星期|个月|月)\\s*(?:后|以后|之后)`))
+    ?? value.match(new RegExp(`(?:过|再过)\\s*${scenarioCount}\\s*(?:个)?\\s*(天|日|周|星期|个月|月)`))
+  const en = value.match(/\b(?:in|after)\s+(\d+(?:\.\d+)?|a|one|two|three|four)\s+(days?|weeks?|months?)\b/)
+    ?? value.match(/\b(\d+(?:\.\d+)?|a|one|two|three|four)\s+(days?|weeks?|months?)\s+(?:from now|later)\b/)
+  const words = { a: 1, one: 1, two: 2, three: 3, four: 4 }
+  const match = zh ?? en
+  if (!match) return undefined
+  const count = words[match[1]] ?? countValue(match[1])
+  const days = count * unitDays(match[2])
+  return days > 0 && days <= 400 ? days : undefined
+}
+
+// "涨 10%" / "跌到更低 5%" / "drops 8%" inside a what-if: a stock move relative to the current price.
+// IV clauses are removed first so "IV 升高 10%" is not read as a price move.
+export function hypotheticalPriceMove(message) {
+  const value = String(message).toLowerCase().replace(new RegExp(`${ivWord}[^，,。；;!?！？]*`, 'g'), ' ')
+  const zh = value.match(/(上涨|走高|涨|升|下跌|走低|回落|跌)(?:了|到|超过)?\s*(?:更高|更低|约|大约)?\s*(\d+(?:\.\d+)?)\s*[%％]/)
+  const en = value.match(/\b(up|rises?|rallies|gains?|climbs?|down|drops?|falls?|declines?|slides?)\s*(?:by\s*)?(?:about\s*)?(\d+(?:\.\d+)?)\s*%/)
+  const match = zh ?? en
+  if (!match) return undefined
+  const size = Number(match[2])
+  if (!(size > 0 && size <= 80)) return undefined
+  return /下跌|走低|回落|跌|down|drop|fall|decline|slide/.test(match[1]) ? -size : size
+}
+
+// A what-if turn: any of price, days forward and IV shift. IV changes count without "如果" because they are
+// never a view on the stock; price and time need a hypothetical marker so "两周后看涨" stays a horizon.
+export function hypotheticalScenario(message) {
+  const value = String(message).toLowerCase()
+  const marker = /如果|假如|假设|要是|万一|倘若|\bif\b|what if|suppose|assuming/.test(value)
+  const iv = hypotheticalIvShift(message)
+  const price = hypotheticalPrice(message)
+  const daysForward = marker || iv ? hypotheticalDaysForward(message) : undefined
+  const priceMovePercent = (marker || iv) && price === undefined ? hypotheticalPriceMove(message) : undefined
+  if (!iv && price === undefined && daysForward === undefined && priceMovePercent === undefined) return undefined
+  return {
+    ...(price !== undefined ? { price } : {}),
+    ...(priceMovePercent !== undefined ? { priceMovePercent } : {}),
+    ...(daysForward !== undefined ? { daysForward } : {}),
+    ...(iv ? { ivShiftPoints: iv.ivShiftPoints, ivAssumed: iv.assumed } : {}),
+  }
+}
+
 // Position Greeks in plain units: delta in shares, theta and vega in dollars per day / per IV point.
 export function netGreeks(strategy) {
   const legs = strategy?.legs ?? []
@@ -795,12 +865,16 @@ export function parseAssistantTurn(message, prior = {}) {
   // "第三个" when the last list had two items must not silently fall back to another strategy.
   const missingOrdinals = ordinals(message).filter((index) => !prior.lastReferencedIds?.[index - 1])
   if (missingOrdinals.length && intent === 'clarify') intent = /风险|亏|risk|lose|loss/i.test(message) ? 'risk_check' : 'explain'
-  const scenarioPrice = hypotheticalPrice(message)
-  if (scenarioPrice !== undefined) {
+  const scenario = hypotheticalScenario(message)
+  const scenarioPrice = scenario?.price
+  if (scenario) {
     for (const field of ['targetPrice', 'direction', 'strength']) delete patch[field]
-    if (intent === 'clarify' || intent === 'recommend') intent = /亏|损失|lose|loss|risk|风险/i.test(message) ? 'risk_check' : 'explain'
+    // "两周后" inside a what-if is the scenario date, not a new horizon for the screen.
+    if (scenario.daysForward !== undefined || scenario.ivShiftPoints !== undefined) delete patch.horizon
+    const conceptQuestion = /什么是|是什么|什么意思|\bwhat(?:'s| is| does)\b.*\b(?:mean|iv crush)\b|^\s*what is\b/i.test(message)
+    if (['clarify', 'recommend'].includes(intent) || (intent === 'educate' && !conceptQuestion)) intent = /亏|损失|lose|loss|risk|风险/i.test(message) ? 'risk_check' : 'explain'
   }
-  let contract = scenarioPrice === undefined && !confirmedFields.length ? parseContractAdjustment(message, reference) : null
+  let contract = !scenario && !confirmedFields.length ? parseContractAdjustment(message, reference) : null
   // With no strategy in view, a date-only edit is a new horizon for the screen, not a contract edit.
   const inView = reference || prior.focusStrategyId || prior.lastReferencedIds?.length || prior.clientSelectedId
   if (contract && !inView && contract.expiration && !contract.strikes.length && !contract.replace.length && !contract.shift && !contract.otm && !contract.width && !contract.quantity) contract = null
@@ -809,7 +883,7 @@ export function parseAssistantTurn(message, prior = {}) {
     // A strike or expiration written for a specific contract is not a new horizon or target for the screen.
     if (contract.expiration) delete patch.horizon
   }
-  return { intent, patch, reference, references: strategyReferences(message, prior), skippedField, forecast, missingOrdinals, invalid, confirmedFields, declinedField, contract: contract ?? undefined, scenarioPrice }
+  return { intent, patch, reference, references: strategyReferences(message, prior), skippedField, forecast, missingOrdinals, invalid, confirmedFields, declinedField, contract: contract ?? undefined, scenarioPrice, scenario }
 }
 
 // Short follow-up answers inherit the intent that asked the question; profile-only messages re-run recommendations.
@@ -934,7 +1008,8 @@ export function sanitizeModelPatch(modelPatch = {}, message = '', turn = {}) {
   }
   for (const item of turn.invalid ?? []) delete patch[item.field]
   // A "what if it drops to 1000" price is a scenario, not the user's target or view.
-  if (turn.scenarioPrice !== undefined) for (const field of ['targetPrice', 'direction', 'strength']) if (turn.patch?.[field] === undefined) delete patch[field]
+  if (turn.scenario || turn.scenarioPrice !== undefined) for (const field of ['targetPrice', 'direction', 'strength']) if (turn.patch?.[field] === undefined) delete patch[field]
+  if (turn.scenario?.daysForward !== undefined || turn.scenario?.ivShiftPoints !== undefined) if (turn.patch?.horizon === undefined) delete patch.horizon
   // Strikes typed for a contract edit are not a budget or target.
   if (turn.contract) for (const field of ['riskBudget', 'targetPrice']) if (turn.patch?.[field] === undefined) delete patch[field]
   if (turn.forecast || ['educate', 'explain', 'risk_check', 'compare'].includes(turn.intent)) {
@@ -1235,6 +1310,7 @@ function strategyFacts(strategy, budget, spot) {
     breakevens,
     breakevenDistancePercent: spot > 0 ? breakevens.map((value) => round((value / spot - 1) * 100)) : undefined,
     netGreeks: netGreeks(strategy),
+    sensitivity: spot > 0 ? strategySensitivity(strategy, spot) : undefined,
     probabilityOfProfitPercent: strategy.probabilityOfProfit,
     expectedMove: strategy.expectedMove,
     targetPricePl: strategy.targetPricePl,
@@ -1332,7 +1408,33 @@ function expectedMoveFacts(strategies) {
   }
 }
 
-export function buildAssistantPlan({ intent, message, profile, confirmed = new Set(), context, prior = {}, reference, references = [], changes, forecast = false, missingOrdinals = [], invalid = [], declinedField, targetIssue, contractResult, scenarioPrice, volatility, isZh = false }) {
+function signedUsd(value, isZh, gain, loss) {
+  const amount = usd(Math.round(Math.abs(value)))
+  return value >= 0 ? `${gain} ${amount}` : `${loss} ${amount}`
+}
+
+// One sentence for a repriced what-if: what changed, the model change from today and the P/L vs entry.
+export function whatIfSentence(strategy, result, isZh) {
+  const atExpiry = result.daysToExpiry > 0 && result.daysForward >= result.daysToExpiry
+  const parts = []
+  if (result.daysForward > 0) parts.push(atExpiry ? text(isZh, '到期时', 'at expiration') : text(isZh, `${Math.round(result.daysForward)} 天后`, `${Math.round(result.daysForward)} days from now`))
+  if (result.ivShiftPoints) {
+    const size = Math.abs(result.ivShiftPoints)
+    parts.push(text(isZh,
+      `隐含波动率${result.ivShiftPoints < 0 ? '下降' : '上升'} ${size} 个点${result.ivAssumed ? '（假设幅度）' : ''}`,
+      `implied volatility ${result.ivShiftPoints < 0 ? 'down' : 'up'} ${size} points${result.ivAssumed ? ' (assumed size)' : ''}`))
+  }
+  const move = result.priceMovePercent
+  const moveText = move ? text(isZh, `（${move > 0 ? '上涨' : '下跌'} ${Math.abs(move)}%）`, ` (${move > 0 ? 'up' : 'down'} ${Math.abs(move)}%)`) : ''
+  parts.push(text(isZh, `股价在 ${usd(result.price)}${moveText}`, `the stock at ${usd(result.price)}${moveText}`))
+  const name = displayName(strategy, isZh)
+  if (isZh) {
+    return `按 Black-Scholes 模型估算，${parts.join('、')} 时，${name} 的价值较现在约${signedUsd(result.changeFromNow, true, '增加', '减少')}，相对开仓成本约${signedUsd(result.plVsEntry, true, '赚', '亏')}（模型估算，非报价）。`
+  }
+  return `Black-Scholes estimate with ${parts.join(', ')}: ${strategy.name} would be ${signedUsd(result.changeFromNow, false, 'up', 'down')} versus now and ${signedUsd(result.plVsEntry, false, 'up', 'down')} versus entry (model estimate, not a quote).`
+}
+
+export function buildAssistantPlan({ intent, message, profile, confirmed = new Set(), context, prior = {}, reference, references = [], changes, forecast = false, missingOrdinals = [], invalid = [], declinedField, targetIssue, contractResult, scenarioPrice, scenario: whatIfInput, volatility, isZh = false }) {
   const strategies = Array.isArray(context?.strategies) ? context.strategies : []
   const budget = profile.riskBudget
   const dataGaps = [...new Set((context?.dataGaps ?? []).map(String))]
@@ -1445,10 +1547,24 @@ export function buildAssistantPlan({ intent, message, profile, confirmed = new S
     }
     const problem = riskProblem(target, budget, isZh)
     const loss = finiteMaxLoss(target)
-    const scenario = scenarioPrice !== undefined ? { price: scenarioPrice, plAtExpiration: scenarioPl(target, scenarioPrice) } : undefined
-    const scenarioText = scenario?.plAtExpiration !== undefined
+    const timeOrVol = whatIfInput?.daysForward !== undefined || whatIfInput?.ivShiftPoints !== undefined
+    const movedPrice = whatIfInput?.priceMovePercent !== undefined && spot > 0 ? round(spot * (1 + whatIfInput.priceMovePercent / 100), 2) : undefined
+    const effectivePrice = scenarioPrice ?? whatIfInput?.price ?? movedPrice
+    const scenario = effectivePrice !== undefined && !timeOrVol ? { price: effectivePrice, ...(movedPrice !== undefined ? { movePercent: whatIfInput.priceMovePercent } : {}), plAtExpiration: scenarioPl(target, effectivePrice) } : undefined
+    const expiryText = scenario?.plAtExpiration !== undefined
       ? text(isZh, `如果到期时股价在 ${usd(scenario.price)}，${displayName(target, isZh)} 的到期盈亏约为 ${scenario.plAtExpiration < 0 ? `亏 ${usd(-scenario.plAtExpiration)}` : `赚 ${usd(scenario.plAtExpiration)}`}（不含提前平仓）。`, `If the stock is at ${usd(scenario.price)} at expiration, ${target.name} would be about ${scenario.plAtExpiration < 0 ? `-${usd(-scenario.plAtExpiration)}` : usd(scenario.plAtExpiration)} (held to expiration).`)
       : undefined
+    const whatIf = whatIfInput && spot > 0
+      ? whatIfStrategy(target, { spot, price: effectivePrice, daysForward: whatIfInput.daysForward, ivShiftPoints: whatIfInput.ivShiftPoints })
+      : undefined
+    const whatIfFacts = whatIf
+      ? {
+          ...whatIf,
+          ...(movedPrice !== undefined ? { priceMovePercent: whatIfInput.priceMovePercent } : {}),
+          ...(whatIf.ivShiftPoints ? { ivAssumed: Boolean(whatIfInput.ivAssumed) } : {}),
+        }
+      : undefined
+    const scenarioText = [expiryText, whatIfFacts ? whatIfSentence(target, whatIfFacts, isZh) : undefined].filter(Boolean).join(' ') || undefined
     const verdict = scenarioText ?? (intent !== 'risk_check'
       ? undefined
       : budget === undefined
@@ -1456,14 +1572,15 @@ export function buildAssistantPlan({ intent, message, profile, confirmed = new S
         : problem ?? text(isZh, `${displayName(target, isZh)} 最大亏损 ${usd(loss)}，在你 ${usd(budget)} 的风险预算以内。`, `${target.name} max loss ${usd(loss)} is within your ${usd(budget)} risk budget.`))
     return {
       ...base,
-      mode: intent === 'risk_check' || scenario ? 'risk_check' : 'explain',
+      mode: intent === 'risk_check' || scenario || whatIfFacts ? 'risk_check' : 'explain',
       focus: strategyFacts(target, budget, spot),
       scenario,
+      whatIf: whatIfFacts,
       verdict,
       cards: [strategyCard(target, isZh, budget)],
       referencedStrategyIds: [target.id],
       focusStrategyId: target.id,
-      followUpField: intent === 'risk_check' && !scenario && budget === undefined && !prior.asked?.includes('riskBudget') ? 'riskBudget' : undefined,
+      followUpField: intent === 'risk_check' && !scenario && !whatIfFacts && budget === undefined && !prior.asked?.includes('riskBudget') ? 'riskBudget' : undefined,
       pendingIntent: intent,
     }
   }
@@ -1796,7 +1913,44 @@ export function deterministicAnswer(plan, isZh) {
 const banned = /\b(guaranteed|risk-free|risk free|buy it now|sell it now|you should buy|you should sell|must buy|must sell)\b|稳赚|保本|无风险|必须买|必须卖|建议买入|建议卖出|应该买入|应该卖出|一定会涨|一定会跌/gi
 const internalTerms = /agentPlan|topStrategies|referencedStrategyIds|dataGaps|structuredUpdates|JSON|QVERIS_[A-Z_]+|schema|system prompt/i
 
-export function guardAssistantText(raw, { isZh = false, unknownNumbers = () => [] } = {}) {
+// Directional claims the narrator makes about IV, time and price must match the repriced position.
+const claimPositive = /有利|利好|受益|获益|帮助|帮你|有帮助|赚钱|盈利|增值|升值|对你好|\bbenefit(?:s|ed)?\b|\bhelps?\b|\bgains?\b|\bprofits?\b|\bfavorable\b|\bworks? (?:for|in favor)\b|\bin your favor\b/i
+const claimNegative = /不利|拖累|伤害|损害|亏损|亏钱|吃亏|损失|贬值|缩水|侵蚀|对你不好|\bhurts?\b|\bloses?\b|\blosses\b|\bunfavorable\b|\bworks? against\b|\bagainst you\b|\bdrag\b|\berodes?\b|\bcosts? you\b/i
+const claimIvUp = new RegExp(`${ivWord}\\s*(?:如果|要是|再|一旦)?\\s*${ivUpWord}|${ivUpWord}\\s*(?:的)?\\s*${ivWord}`, 'i')
+const claimIvDown = new RegExp(`${ivWord}\\s*(?:如果|要是|再|一旦)?\\s*${ivDownWord}|iv crush|${ivDownWord}\\s*(?:的)?\\s*${ivWord}`, 'i')
+const claimTime = /时间流逝|时间价值流失|时间衰减|随着时间|每过一天|每天|时间推移|\btheta\b|time decay|as time passes|each day|every day|passage of time/i
+const claimPriceUp = /股价(?:如果|要是|再)?(?:上涨|上升|走高|涨)|(?:上涨|涨)(?:时|的话|越多)|stock (?:rises|rallies|goes up|moves up)|price (?:rises|goes up)|\brally\b|upside move/i
+const claimPriceDown = /股价(?:如果|要是|再)?(?:下跌|下降|走低|跌)|(?:下跌|跌)(?:时|的话|越多)|stock (?:falls|drops|goes down|moves down|declines)|price (?:falls|drops|goes down)|\bsell-?off\b|downside move/i
+
+/**
+ * Returns a reason when a sentence says a move helps/hurts the position the opposite way the model computes.
+ * Ambiguous sentences (both moves, or both helps and hurts) are left alone: they cannot be checked.
+ */
+export function directionalClaimIssue(sentence, effects) {
+  if (!effects || !sentence) return undefined
+  const value = String(sentence)
+  const positive = claimPositive.test(value)
+  const negative = claimNegative.test(value)
+  if (positive === negative) return undefined
+  const said = positive ? 'helps' : 'hurts'
+  const checks = []
+  const ivUp = claimIvUp.test(value)
+  const ivDown = claimIvDown.test(value)
+  if (ivUp !== ivDown) checks.push([ivUp ? 'ivUp' : 'ivDown', ivUp ? 'IV up' : 'IV down'])
+  else if (!ivUp && claimTime.test(value)) checks.push(['timePassing', 'time passing'])
+  if (!checks.length) {
+    const up = claimPriceUp.test(value)
+    const down = claimPriceDown.test(value)
+    if (up !== down) checks.push([up ? 'priceUp' : 'priceDown', up ? 'price up' : 'price down'])
+  }
+  for (const [key, label] of checks) {
+    const actual = effects[key]
+    if (actual && actual !== 'flat' && actual !== said) return `contradicts ${label} (${actual})`
+  }
+  return undefined
+}
+
+export function guardAssistantText(raw, { isZh = false, unknownNumbers = () => [], claimIssue = () => undefined } = {}) {
   const warnings = []
   const sentences = String(raw ?? '').split(/(?<=[。！？!?\n]|\.\s)/)
   const kept = []
@@ -1807,7 +1961,7 @@ export function guardAssistantText(raw, { isZh = false, unknownNumbers = () => [
     // camelCase identifiers (estimatedPl, maxLoss) are plan field names leaking into prose.
     const unknown = unknownNumbers(sentence)
     const reason = internalTerms.test(sentence) || /\b[a-z]{2,}[A-Z][A-Za-z]*\b/.test(sentence) ? 'internal term'
-      : unknown.length ? `unverified ${unknown.join(',')}` : undefined
+      : unknown.length ? `unverified ${unknown.join(',')}` : claimIssue(sentence)
     if (reason) {
       if (!kept.length && !dropped) firstDropped = true
       dropped += 1

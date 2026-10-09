@@ -5,7 +5,7 @@ import { money } from '../core/dashboardData'
 import { submitPaperOrder } from '../core/paperTradeApi'
 import { recordProductEvent } from '../core/productEventsApi'
 import { buildRiskChecklist } from '../core/riskChecklistEngine'
-import { assistantBriefText } from '../core/assistantPolicy'
+import { fallbackAssistantResponse, type AssistantChatResponse } from '../core/assistantPolicy'
 import { adjustStrategyLegs, type StrategyLegAdjustment } from '../core/strategyAdjustmentEngine'
 import { buildPaperTradeCostBreakdown } from '../core/paperTradeEngine'
 import { useT } from '../i18n'
@@ -13,7 +13,7 @@ import type { StrategyCandidate } from '../types/strategyTypes'
 import type { QverisOptionsResponse, QverisOptionContract } from '../types/optionTypes'
 import type { ParsedView } from '../types/strategyTypes'
 import type { ActiveSimulatorState } from '../core/simulatorChartEngine'
-import { BriefContent } from './AssistantExplanationPanel'
+import { AssistantAnswer, AssistantThinking } from './AssistantAnswer'
 import { StrategySimulator } from './PaperPlanTicket'
 import { GreeksQuadChart } from './GreeksQuadChart'
 type CardTab = 'overview' | 'adjust' | 'sim' | 'greeks' | 'explain'
@@ -261,7 +261,9 @@ export function StrategyCard({
 }) {
   const { t, lang } = useT()
   const [saveLabel, setSaveLabel] = useState('')
-  const [explanation, setExplanation] = useState('')
+  const [explanation, setExplanation] = useState<AssistantChatResponse>()
+  // The reply waits here until the progress animation has ticked through every step.
+  const [pendingExplanation, setPendingExplanation] = useState<{ answer: AssistantChatResponse; error: boolean }>()
   const [explainState, setExplainState] = useState<'idle' | 'loading' | 'error'>('idle')
   const [activeTab, setActiveTab] = useState<CardTab>('overview')
   // null = no user adjustment yet → always use latest strategy prop
@@ -304,7 +306,9 @@ export function StrategyCard({
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          userMessage: `Explain the selected ${displayStrategy.name} strategy for ${(ticker ?? '').toUpperCase()}.`,
+          userMessage: lang === 'zh'
+            ? `解释当前选中的 ${(ticker ?? '').toUpperCase()} ${displayStrategy.name} 策略。`
+            : `Explain the selected ${displayStrategy.name} strategy for ${(ticker ?? '').toUpperCase()}.`,
           language: lang,
           mode: 'strategy_explanation',
           marketContext: {
@@ -319,11 +323,9 @@ export function StrategyCard({
       })
       const body = await response.json()
       if (!response.ok) throw new Error(body.error || 'Explanation failed')
-      setExplanation(assistantBriefText(body))
-      setExplainState('idle')
+      setPendingExplanation({ answer: body as AssistantChatResponse, error: false })
     } catch (error) {
-      setExplanation(error instanceof Error ? error.message : 'Explanation failed')
-      setExplainState('error')
+      setPendingExplanation({ answer: fallbackAssistantResponse(error instanceof Error ? error.message : 'Explanation failed'), error: true })
     }
   }
 
@@ -435,7 +437,26 @@ export function StrategyCard({
           )}
           {activeTab === 'sim' && <StrategySimulator strategy={displayStrategy} ticker={ticker} onProjectionChange={onProjectionChange} />}
           {activeTab === 'greeks' && <GreeksQuadChart strategy={displayStrategy} underlyingPrice={underlyingPrice} />}
-          {activeTab === 'explain' && explanation ? <BriefContent text={explanation} isError={explainState === 'error'} lang={lang} ticker={ticker} /> : null}
+          {/* Stays mounted (hidden) on other tabs so the reply is still released when the animation ends. */}
+          {explainState === 'loading' ? (
+            <div hidden={activeTab !== 'explain'}>
+            <AssistantThinking
+              lang={lang}
+              kind="explain"
+              done={Boolean(pendingExplanation)}
+              onFinished={() => {
+                if (pendingExplanation) setExplanation(pendingExplanation.answer)
+                setExplainState(pendingExplanation?.error ? 'error' : 'idle')
+                setPendingExplanation(undefined)
+              }}
+            />
+            </div>
+          ) : null}
+          {activeTab === 'explain' && explainState !== 'loading' && explanation ? (
+            <div className={`brief-answer${explainState === 'error' ? ' brief-error' : ''}`}>
+              <AssistantAnswer answer={explanation} lang={lang} variant="brief" />
+            </div>
+          ) : null}
           <div className="tile-actions">
             {saveLabel === 'Opened' ? (
               <button type="button" className="pp-view-link" onClick={() => { window.location.hash = '#/paper' }}>
@@ -445,7 +466,7 @@ export function StrategyCard({
               <button type="button" onClick={save}>{saveLabel || t.card.paperTrade}</button>
             )}
             <button disabled={explainState === 'loading'} type="button" onClick={explain}>
-              {explainState === 'loading' ? <Loader2 size={13} /> : null}
+              {explainState === 'loading' ? <Loader2 size={13} className="spin" /> : null}
               {t.card.explain}
             </button>
           </div>

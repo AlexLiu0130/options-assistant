@@ -11,6 +11,7 @@ import {
   Search,
   Moon,
   Sun,
+  Bot,
   Waves,
   Zap,
 } from 'lucide-react'
@@ -273,6 +274,7 @@ function App() {
 
 function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: string; theme: 'light' | 'dark'; onToggleTheme: () => void }) {
   const { t, lang, setLang } = useT()
+  const [assistantOpen, setAssistantOpen] = useState(false)
   const [startForm] = useState<FormState>(() => ({
     ...initialForm,
     ticker: initialTicker,
@@ -543,6 +545,18 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
           <span>AI</span>
         </button>
         <div className="oa-top-spacer" />
+        {ticker ? (
+          <button
+            className={`assistant-entry${assistantOpen ? ' active' : ''}`}
+            type="button"
+            onClick={() => setAssistantOpen((current) => !current)}
+            aria-label="Open Qveris AI"
+            aria-expanded={assistantOpen}
+          >
+            <Bot size={16} />
+            <span>Qveris AI</span>
+          </button>
+        ) : null}
         <button className="theme-toggle" type="button" onClick={onToggleTheme} aria-label="Toggle dark mode">
           {theme === 'dark' ? <Moon size={16} /> : <Sun size={16} />}
         </button>
@@ -800,6 +814,8 @@ function TradingPage({ initialTicker, theme, onToggleTheme }: { initialTicker: s
         selectedStrategy={selectedStrategy}
         strategies={strategies}
         ticker={ticker}
+        open={assistantOpen}
+        onOpenChange={setAssistantOpen}
       />
       </>
       )}

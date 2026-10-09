@@ -8,6 +8,7 @@ import {
   canonicalHorizon,
   deterministicAnswer,
   guardAssistantText,
+  directionalClaimIssue,
   horizonDays,
   horizonZh,
   isAdviceRequest,
@@ -722,7 +723,10 @@ async function handle(req, res) {
       const body = await readJson(req)
       const userMessage = String(body.userMessage ?? '').trim().slice(0, 2000)
       if (!userMessage) throw safeError('userMessage is required.', 400)
-      const isZh = replyLanguage(userMessage, Array.isArray(body.history) ? body.history : [], body.language) === 'zh'
+      // Page buttons (strategy_explanation) send a templated prompt, so the UI language decides; typed chat follows the user.
+      const isZh = body.mode === 'strategy_explanation'
+        ? body.language === 'zh'
+        : replyLanguage(userMessage, Array.isArray(body.history) ? body.history : [], body.language) === 'zh'
       const rawPrior = normalizeAgentState(body.agentState, normalizeAgentProfile)
       const clientContext = body.marketContext ?? {}
       const pageTicker = profileFromMarketContext(clientContext).ticker
@@ -904,6 +908,7 @@ async function handle(req, res) {
         targetIssue,
         contractResult,
         scenarioPrice: turn.scenarioPrice,
+        scenario: turn.scenario,
         volatility,
         isZh,
       })
@@ -960,8 +965,11 @@ async function handle(req, res) {
       const messageNumbers = [...userMessage.matchAll(/\d[\d,]*(?:\.\d+)?/g)].map((match) => Number(match[0].replaceAll(',', ''))).filter(Number.isFinite)
       const trusted = { plan, extra: [profile.riskBudget, profile.targetPrice, ...messageNumbers, ...(toolbox?.outputs ?? [])] }
       const unknownNumbers = (sentence) => unknownFinancialNumbers({ answer: sentence }, trusted)
-      const answerGuard = guardAssistantText(narrated?.answer, { isZh, unknownNumbers })
-      const followGuard = guardAssistantText(narrated?.followUpQuestion, { isZh, unknownNumbers })
+      // Single-strategy answers are checked for IV / time / price claims that contradict the repriced position.
+      const effects = ['explain', 'risk_check', 'contract_adjust'].includes(plan.mode) ? plan.focus?.sensitivity?.effects : undefined
+      const claimIssue = (sentence) => directionalClaimIssue(sentence, effects)
+      const answerGuard = guardAssistantText(narrated?.answer, { isZh, unknownNumbers, claimIssue })
+      const followGuard = guardAssistantText(narrated?.followUpQuestion, { isZh, unknownNumbers, claimIssue })
       // The lead sentence carries the conclusion; without it the remainder reads as a fragment.
       const useModel = answerGuard.answer.length > 0 && !answerGuard.firstDropped && answerGuard.dropped <= Math.floor(answerGuard.total / 2)
       if (answerGuard.dropped) console.warn(`[assistant] narration dropped ${answerGuard.dropped}/${answerGuard.total} sentences: ${answerGuard.reasons.join('; ')}`)

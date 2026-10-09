@@ -2,6 +2,7 @@
 // Every tool answers from the same QVeris snapshot the plan was built on (or the server's own cached
 // endpoints), and every number a tool returns is added to the set the response guard trusts.
 import { strategyExpirationPayoff } from '../src/core/payoffEngine.ts'
+import { whatIfStrategy } from '../src/core/whatIfEngine.ts'
 import { netGreeks, premiumPlanFields } from './assistantAgent.mjs'
 
 const MAX_ROWS = 24
@@ -128,6 +129,22 @@ export const assistantToolSpecs = [
   {
     type: 'function',
     function: {
+      name: 'what_if',
+      description: 'Black-Scholes estimate of a strategy\'s value before expiration under a different stock price, days passing and/or implied volatility shift. Returns change from today and P/L versus entry, overall and per leg. Use for any question about IV changes, time decay or P/L before expiration.',
+      parameters: {
+        type: 'object',
+        properties: {
+          strategy_id: { type: 'string', description: 'Strategy id from the plan; defaults to the focus strategy.' },
+          price: { type: 'number', description: 'Stock price; defaults to the current price.' },
+          days_forward: { type: 'number', description: 'Calendar days from today (capped at expiration).' },
+          iv_change_points: { type: 'number', description: 'Implied volatility shift in percentage points, e.g. -5 for IV down 5 points.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_strategy_details',
       description: 'Legs, net position Greeks, max loss/profit, breakevens, POP and scenario rows of a candidate strategy.',
       parameters: { type: 'object', properties: { strategy_id: { type: 'string' } } },
@@ -232,6 +249,19 @@ export function createAssistantTools({ ticker, context, fetchJson, focusStrategy
         maxProfit: strategy.maxProfit,
         breakevens: strategy.breakevens ?? (strategy.breakeven ? [strategy.breakeven] : []),
       }
+    },
+    async what_if({ strategy_id: id, price, days_forward: daysForward, iv_change_points: ivShiftPoints } = {}) {
+      const strategy = strategyFor(id)
+      if (!strategy?.legs?.length) return { error: 'No strategy with live legs.' }
+      if (!spot) return { error: 'No live stock price.' }
+      const shift = Number(ivShiftPoints)
+      const result = whatIfStrategy(strategy, {
+        spot,
+        price: Number(price) > 0 ? Number(price) : undefined,
+        daysForward: Number(daysForward) > 0 ? Number(daysForward) : undefined,
+        ivShiftPoints: Number.isFinite(shift) ? Math.max(-60, Math.min(60, shift)) : undefined,
+      })
+      return result ? { strategyId: strategy.id, strategyName: strategy.name, spot, model: 'Black-Scholes estimate, not a quote', ...result } : { error: 'Could not reprice the strategy.' }
     },
     async get_strategy_details({ strategy_id: id } = {}) {
       const strategy = strategyFor(id)

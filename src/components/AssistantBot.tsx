@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bot, Loader2, Send, X } from 'lucide-react'
+import { Send, X } from 'lucide-react'
 import {
   buildAssistantContext,
   fallbackAssistantResponse,
@@ -11,6 +11,8 @@ import {
 } from '../core/assistantPolicy'
 import { recordProductEvent } from '../core/productEventsApi'
 import { useT } from '../i18n'
+import { thinkingKindFor, type ThinkingKind } from '../core/assistantThinking'
+import { AssistantAnswer, AssistantThinking } from './AssistantAnswer'
 import type { QverisMarketSnapshot, QverisOptionsResponse } from '../types/optionTypes'
 import type { ParsedView, StrategyCandidate } from '../types/strategyTypes'
 
@@ -48,47 +50,6 @@ function plainText(answer: AssistantChatResponse) {
   return [answer.answer, answer.followUpQuestion].filter(Boolean).join('\n')
 }
 
-function AssistantAnswer({
-  answer,
-  lang,
-  selectedStrategyId,
-  onSelectStrategy,
-}: {
-  answer: AssistantChatResponse
-  lang: 'en' | 'zh'
-  selectedStrategyId?: string
-  onSelectStrategy?: (id: string) => void
-}) {
-  return (
-    <div className="assistant assistant-answer">
-      {answer.answer ? <p>{answer.answer}</p> : null}
-      {(answer.sections ?? []).map((section) => (
-        <div className="assistant-card" key={`${section.strategyId ?? ''}-${section.title}`}>
-          <div className="assistant-card-head">
-            <strong>{section.title}</strong>
-            {section.strategyId && onSelectStrategy ? (
-              <button
-                type="button"
-                className={section.strategyId === selectedStrategyId ? 'active' : ''}
-                onClick={() => onSelectStrategy(section.strategyId!)}
-              >
-                {section.strategyId === selectedStrategyId
-                  ? (lang === 'zh' ? '已选中' : 'Selected')
-                  : (lang === 'zh' ? '在图表中查看' : 'View on chart')}
-              </button>
-            ) : null}
-          </div>
-          <p>{section.body}</p>
-        </div>
-      ))}
-      {answer.followUpQuestion ? <p className="assistant-follow-up">{answer.followUpQuestion}</p> : null}
-      {(answer.warnings ?? []).slice(0, 2).map((warning) => (
-        <p className="assistant-warning" key={warning}>{warning}</p>
-      ))}
-    </div>
-  )
-}
-
 export function AssistantBot({
   ticker,
   parsedView,
@@ -100,6 +61,8 @@ export function AssistantBot({
   onSelectStrategy,
   onContractAdjustment,
   profileApplied = false,
+  open,
+  onOpenChange,
 }: {
   ticker: string
   parsedView: ParsedView
@@ -111,11 +74,16 @@ export function AssistantBot({
   onSelectStrategy?: (id: string) => void
   onContractAdjustment?: (adjustment: AssistantContractAdjustment) => void
   profileApplied?: boolean
+  /** The entry button lives in the top bar, so the page owns the open state. */
+  open: boolean
+  onOpenChange: (open: boolean) => void
 }) {
   const { lang } = useT()
-  const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [thinkingKind, setThinkingKind] = useState<ThinkingKind>('chat')
+  // A reply that has arrived but waits for the progress animation to finish ticking.
+  const [pending, setPending] = useState<Message>()
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
@@ -147,6 +115,7 @@ export function AssistantBot({
     if (!userMessage || loading) return
     setInput('')
     setMessages((current) => [...current, { role: 'user', content: userMessage }])
+    setThinkingKind(thinkingKindFor(userMessage))
     setLoading(true)
     try {
       const response = await fetch('/api/assistant/chat', {
@@ -186,24 +155,21 @@ export function AssistantBot({
           },
         })
       }
-      setMessages((current) => [
-        ...current,
-        { role: 'assistant', content: plainText(answer), response: answer },
-      ])
+      setPending({ role: 'assistant', content: plainText(answer), response: answer })
     } catch (error) {
       const answer = fallbackAssistantResponse(error instanceof Error ? error.message : 'Qveris AI is unavailable.')
-      setMessages((current) => [...current, { role: 'assistant', content: answer.answer }])
-    } finally {
-      setLoading(false)
+      setPending({ role: 'assistant', content: answer.answer })
     }
+  }
+
+  function revealPending() {
+    if (pending) setMessages((current) => [...current, pending])
+    setPending(undefined)
+    setLoading(false)
   }
 
   return (
     <>
-      <button className="assistant-fab" type="button" onClick={() => setOpen(true)} aria-label="Open Qveris AI">
-        <Bot size={22} />
-        <span>Qveris AI</span>
-      </button>
       {open ? (
         <section className="assistant-drawer" aria-label="Qveris AI assistant">
           <header>
@@ -211,7 +177,7 @@ export function AssistantBot({
               <strong>Qveris AI</strong>
               <span>{ticker} · {parsedView.view} · {parsedView.time_horizon} · {lang === 'zh' ? '风险' : 'Risk'} {parsedView.risk_budget ? `$${parsedView.risk_budget}` : (lang === 'zh' ? '待填写' : 'pending')}</span>
             </div>
-            <button type="button" onClick={() => setOpen(false)} aria-label="Close Qveris AI"><X size={17} /></button>
+            <button type="button" onClick={() => onOpenChange(false)} aria-label="Close Qveris AI"><X size={17} /></button>
           </header>
           <div className="assistant-chip-row">
             {chips[lang].map(([label, prompt]) => (
@@ -232,7 +198,7 @@ export function AssistantBot({
                 <p className={message.role} key={`${message.role}-${index}`}>{message.content}</p>
               )
             ))}
-            {loading ? <p className="assistant"><Loader2 size={14} /> {lang === 'zh' ? '正在读取实时期权链并分析…' : 'Reading the live chain and analyzing...'}</p> : null}
+            {loading ? <AssistantThinking lang={lang} kind={thinkingKind} done={Boolean(pending)} onFinished={revealPending} /> : null}
             <div ref={messagesEnd} />
           </div>
           <form
